@@ -6,12 +6,11 @@
 const express = require('express');
 const apiManager = require('../services/apiManager');
 const { authenticate } = require('../middleware/auth');
-const { 
-  catchAsync, 
-  validate, 
-  ValidationError,
+const {
+  catchAsync,
+  validate,
   NotFoundError,
-  AuthenticationError 
+  AuthenticationError
 } = require('../middleware/errorHandler');
 
 const router = express.Router();
@@ -435,7 +434,7 @@ router.post('/wallets/send', authenticate, catchAsync(async (req, res) => {
  * @body    Same as /send endpoint
  */
 router.post('/wallets/send/estimate', authenticate, catchAsync(async (req, res) => {
-  const { chain, to, token, amount } = req.body;
+  const { chain, to, amount } = req.body;
 
   validate(to, 'to address is required');
   validate(amount, 'amount is required');

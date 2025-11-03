@@ -177,7 +177,7 @@ function isValidUrl(url) {
   try {
     new URL(url);
     return true;
-  } catch (e) {
+  } catch {
     return false;
   }
 }
@@ -517,7 +517,7 @@ function timeout(promise, ms) {
 function safeJsonParse(str, defaultValue = null) {
   try {
     return JSON.parse(str);
-  } catch (e) {
+  } catch {
     return defaultValue;
   }
 }
@@ -531,7 +531,7 @@ function safeJsonParse(str, defaultValue = null) {
 function safeJsonStringify(obj, defaultValue = '{}') {
   try {
     return JSON.stringify(obj);
-  } catch (e) {
+  } catch {
     return defaultValue;
   }
 }

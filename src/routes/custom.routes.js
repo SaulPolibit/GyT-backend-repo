@@ -8,7 +8,6 @@ const { authenticate, createToken } = require('../middleware/auth');
 const {
   catchAsync,
   validate,
-  ValidationError,
   NotFoundError
 } = require('../middleware/errorHandler');
 const User = require('../models/user');

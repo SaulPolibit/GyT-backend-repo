@@ -18,7 +18,6 @@ const {
 const { isDevelopment } = require('./utils/helpers');
 
 
-const mongoose = require('mongoose');
 const connectDB = require('./config/database');
 
 // Initialize Express app
@@ -37,11 +36,11 @@ app.use(helmet({
       defaultSrc: ["'self'"],
       styleSrc: ["'self'", "'unsafe-inline'"],
       scriptSrc: ["'self'"],
-      imgSrc: ["'self'", "data:", "https:", "http://localhost:3000"],
+      imgSrc: ["'self'", 'data:', 'https:', 'http://localhost:3000'],
     },
   },
   crossOriginEmbedderPolicy: false,
-  crossOriginResourcePolicy: { policy: "cross-origin" },
+  crossOriginResourcePolicy: { policy: 'cross-origin' },
 }));
 
 // ===== CORS CONFIGURATION =====

@@ -182,7 +182,7 @@ class HttpClient {
         if (typeof body === 'string') {
           try {
             return JSON.parse(body);
-          } catch (e) {
+          } catch {
             console.warn('[HttpClient] Failed to parse JSON body, returning as-is');
             return body;
           }
@@ -386,7 +386,7 @@ class HttpClient {
         timeout,
       });
       return response.statusCode < 400;
-    } catch (error) {
+    } catch {
       return false;
     }
   }

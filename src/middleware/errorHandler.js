@@ -218,7 +218,7 @@ const handleAxiosError = (err) => {
 /**
  * Main error handling middleware
  */
-const errorHandler = (err, req, res, next) => {
+const errorHandler = (err, req, res, _next) => {
   // Log error
   logError(err, req);
 

@@ -514,9 +514,7 @@ class ApiManager {
     const {
       idempotencyKey, type, firstName, middleName, lastName, email, phone,
       addressStreet1, addressCity, addressSubdivision, addressPostalCode, addressCountry,
-      birthDate, nationality, identifyingType, identifyingIssuingCountry, identifyingNumber,
-      identifyingDescription, identifyingExpiration, identifyingImageFrontBase64, identifyingImageBackBase64,
-      identifyingInformation
+      birthDate, nationality, identifyingInformation
     } = variables;
     const apikey = getEnvVariable('BRIDGE_API_KEY', variables.apikey);
     const group = this.createBridgeCustomersGroup();
@@ -1130,7 +1128,7 @@ console.log('****** BODY:', body);
     });
   }
 
-async getDiditToken(context, variables) {
+async getDiditToken(_context, _variables) {
   const authBasic = getEnvVariable('DIDIT_AUTH_BASIC', '');
 
   try {
@@ -1275,4 +1273,4 @@ async getDiditToken(context, variables) {
   }
 }
 
-module.exports = new ApiManager()
+module.exports = new ApiManager();

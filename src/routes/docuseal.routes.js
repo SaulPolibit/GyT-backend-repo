@@ -6,12 +6,11 @@
 const express = require('express');
 const apiManager = require('../services/apiManager');
 const { authenticate } = require('../middleware/auth');
-const { 
-  catchAsync, 
-  validate, 
-  ValidationError,
+const {
+  catchAsync,
+  validate,
   NotFoundError,
-  AuthorizationError 
+  AuthorizationError
 } = require('../middleware/errorHandler');
 
 const router = express.Router();
