@@ -210,6 +210,14 @@ app.get('/api', (req, res) => {
         description: 'PoliBit, DiDit KYC, and smart contract deployment',
         endpoints: '/api/custom',
       },
+      company: {
+        description: 'Company data management',
+        endpoints: '/api/company',
+      },
+      notifications: {
+        description: 'User notification settings management',
+        endpoints: '/api/notifications',
+      },
     },
     documentation: {
       health: 'GET /health',
@@ -264,6 +272,8 @@ const server = app.listen(PORT, async () => {
   console.log(`   • DocuSeal: http://localhost:${PORT}/api/docuseal`);
   console.log(`   • Bridge: http://localhost:${PORT}/api/bridge`);
   console.log(`   • Custom: http://localhost:${PORT}/api/custom`);
+  console.log(`   • Company: http://localhost:${PORT}/api/company`);
+  console.log(`   • Notifications: http://localhost:${PORT}/api/notifications`);
   console.log('=================================\n');
   
   await connectDB();

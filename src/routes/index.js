@@ -5,6 +5,7 @@ const docusealRoutes = require('./docuseal.routes');
 const bridgeRoutes = require('./bridge.routes');
 const customRoutes = require('./custom.routes');
 const companyRoutes = require('./company.routes');
+const notificationsRoutes = require('./notifications.routes');
 
 const router = express.Router();
 
@@ -15,6 +16,7 @@ router.use('/docuseal', docusealRoutes);
 router.use('/bridge', bridgeRoutes);
 router.use('/custom', customRoutes);
 router.use('/company', companyRoutes);
+router.use('/notifications', notificationsRoutes);
 
 // Root API endpoint
 router.get('/', (req, res) => {
@@ -28,6 +30,7 @@ router.get('/', (req, res) => {
       bridge: '/api/bridge',
       custom: '/api/custom',
       company: '/api/company',
+      notifications: '/api/notifications',
     },
   });
 });
