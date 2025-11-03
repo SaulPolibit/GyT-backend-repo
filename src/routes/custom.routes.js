@@ -746,19 +746,17 @@ router.post('/deploy/erc20', authenticate, catchAsync(async (req, res) => {
  *          }
  */
 router.get('/deploy/erc3643', authenticate, catchAsync(async (req, res) => {
-  const { 
-    authToken, 
-    contractTokenName, 
-    contractTokenSymbol, 
-    contractTokenValue, 
-    contractMaxTokens, 
-    company, 
+  const {
+    contractTokenName,
+    contractTokenSymbol,
+    contractTokenValue,
+    contractMaxTokens,
+    company,
     currency,
-    projectName 
+    projectName
   } = req.query;
 
   // Validate required fields
-  validate(authToken, 'authToken is required');
   validate(contractTokenName, 'contractTokenName is required');
   validate(contractTokenSymbol, 'contractTokenSymbol is required');
   validate(contractTokenValue, 'contractTokenValue is required');
