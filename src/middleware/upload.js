@@ -12,6 +12,7 @@ const uploadDir = path.join(__dirname, '../../uploads');
 const profilesDir = path.join(uploadDir, 'profiles');
 const companyLogosDir = path.join(uploadDir, 'company-logos');
 const projectImagesDir = path.join(uploadDir, 'project-images');
+const documentsDir = path.join(uploadDir, 'documents');
 
 if (!fs.existsSync(uploadDir)) {
   fs.mkdirSync(uploadDir, { recursive: true });
@@ -27,6 +28,10 @@ if (!fs.existsSync(companyLogosDir)) {
 
 if (!fs.existsSync(projectImagesDir)) {
   fs.mkdirSync(projectImagesDir, { recursive: true });
+}
+
+if (!fs.existsSync(documentsDir)) {
+  fs.mkdirSync(documentsDir, { recursive: true });
 }
 
 // Configure storage for profile images
@@ -161,11 +166,84 @@ const deleteOldProjectImage = (imagePath) => {
   }
 };
 
+// Configure multer for document uploads (to Supabase Storage)
+// Use memory storage since we'll upload to Supabase
+const documentStorage = multer.memoryStorage();
+
+// Document file filter - allow various document types
+const documentFilter = (req, file, cb) => {
+  const allowedMimeTypes = [
+    // Documents
+    'application/pdf',
+    'application/msword',
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    'application/vnd.ms-excel',
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    'application/vnd.ms-powerpoint',
+    'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    'text/plain',
+    'text/csv',
+    // Images
+    'image/jpeg',
+    'image/png',
+    'image/gif',
+    'image/webp',
+    'image/svg+xml',
+    // Archives
+    'application/zip',
+    'application/x-rar-compressed',
+    'application/x-7z-compressed'
+  ];
+
+  if (allowedMimeTypes.includes(file.mimetype)) {
+    cb(null, true);
+  } else {
+    cb(new Error(`File type ${file.mimetype} is not allowed.`), false);
+  }
+};
+
+// Configure multer for document upload
+const uploadDocument = multer({
+  storage: documentStorage,
+  fileFilter: documentFilter,
+  limits: {
+    fileSize: 10 * 1024 * 1024 // 10MB max file size
+  }
+});
+
+// Middleware to handle document upload with error handling
+const handleDocumentUpload = (req, res, next) => {
+  const upload = uploadDocument.single('file');
+
+  upload(req, res, (err) => {
+    if (err instanceof multer.MulterError) {
+      if (err.code === 'LIMIT_FILE_SIZE') {
+        return res.status(400).json({
+          success: false,
+          message: 'File too large. Maximum file size is 10MB'
+        });
+      }
+      return res.status(400).json({
+        success: false,
+        message: `Upload error: ${err.message}`
+      });
+    } else if (err) {
+      return res.status(400).json({
+        success: false,
+        message: err.message
+      });
+    }
+    next();
+  });
+};
+
 module.exports = {
   uploadProfileImage,
   deleteOldProfileImage,
   uploadCompanyLogo,
   deleteOldCompanyLogo,
   uploadProjectImage,
-  deleteOldProjectImage
+  deleteOldProjectImage,
+  uploadDocument,
+  handleDocumentUpload
 };

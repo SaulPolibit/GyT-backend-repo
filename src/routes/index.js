@@ -9,6 +9,15 @@ const notificationsRoutes = require('./notifications.routes');
 const blockchainRoutes = require('./blockchain.routes');
 const projectRoutes = require('./project.routes');
 
+// Investment Manager routes
+const structureRoutes = require('./structure.routes');
+const investorRoutes = require('./investor.routes');
+const investmentRoutes = require('./investment.routes');
+const capitalCallRoutes = require('./capitalCall.routes');
+const distributionRoutes = require('./distribution.routes');
+const waterfallTierRoutes = require('./waterfallTier.routes');
+const documentRoutes = require('./document.routes');
+
 const router = express.Router();
 
 // Mount route modules
@@ -21,6 +30,15 @@ router.use('/company', companyRoutes);
 router.use('/notifications', notificationsRoutes);
 router.use('/blockchain', blockchainRoutes);
 router.use('/projects', projectRoutes);
+
+// Mount Investment Manager routes
+router.use('/structures', structureRoutes);
+router.use('/investors', investorRoutes);
+router.use('/investments', investmentRoutes);
+router.use('/capital-calls', capitalCallRoutes);
+router.use('/distributions', distributionRoutes);
+router.use('/waterfall-tiers', waterfallTierRoutes);
+router.use('/documents', documentRoutes);
 
 // Root API endpoint
 router.get('/', (_req, res) => {
@@ -37,6 +55,14 @@ router.get('/', (_req, res) => {
       notifications: '/api/notifications',
       blockchain: '/api/blockchain',
       projects: '/api/projects',
+      // Investment Manager endpoints
+      structures: '/api/structures',
+      investors: '/api/investors',
+      investments: '/api/investments',
+      capitalCalls: '/api/capital-calls',
+      distributions: '/api/distributions',
+      waterfallTiers: '/api/waterfall-tiers',
+      documents: '/api/documents',
     },
   });
 });
