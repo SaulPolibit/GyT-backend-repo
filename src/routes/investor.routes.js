@@ -266,9 +266,20 @@ router.put('/:id', authenticate, catchAsync(async (req, res) => {
   validate(investor, 'Investor not found');
   validate(investor.userId === userId, 'Unauthorized access to investor');
 
+  // Check if email is being updated
+  if (req.body.email && req.body.email !== investor.email) {
+    // Validate email format
+    const emailRegex = /^\S+@\S+\.\S+$/;
+    validate(emailRegex.test(req.body.email), 'Invalid email format');
+
+    // Check if email is already used by another investor
+    const existingInvestor = await Investor.findByEmail(req.body.email);
+    validate(!existingInvestor || existingInvestor.id === id, 'Email already in use by another investor');
+  }
+
   const updateData = {};
   const allowedFields = [
-    'phoneNumber', 'country', 'taxId', 'kycStatus', 'accreditedInvestor',
+    'email', 'phoneNumber', 'country', 'taxId', 'kycStatus', 'accreditedInvestor',
     'riskTolerance', 'investmentPreferences',
     // Individual fields
     'firstName', 'lastName', 'dateOfBirth', 'nationality', 'passportNumber',
@@ -304,6 +315,12 @@ router.put('/:id', authenticate, catchAsync(async (req, res) => {
       // Convert empty strings to null for JSON fields
       if (jsonFields.includes(field) && value === '') {
         updateData[field] = null;
+        continue;
+      }
+
+      // Normalize email to lowercase
+      if (field === 'email' && typeof value === 'string') {
+        updateData[field] = value.toLowerCase();
         continue;
       }
 

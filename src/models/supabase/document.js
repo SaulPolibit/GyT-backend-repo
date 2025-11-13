@@ -46,7 +46,7 @@ class Document {
   static _toModel(dbData) {
     if (!dbData) return null;
 
-    return {
+    const model = {
       id: dbData.id,
       entityType: dbData.entity_type,
       entityId: dbData.entity_id,
@@ -65,6 +65,63 @@ class Document {
       createdAt: dbData.created_at,
       updatedAt: dbData.updated_at
     };
+
+    return model;
+  }
+
+  /**
+   * Enrich documents with user information
+   * @private
+   */
+  static async _enrichWithUserInfo(documents) {
+    if (!documents) return documents;
+
+    // Make it work with both single document and array
+    const isArray = Array.isArray(documents);
+    const docs = isArray ? documents : [documents];
+
+    // Filter out null/undefined documents
+    const validDocs = docs.filter(doc => doc !== null && doc !== undefined);
+    if (validDocs.length === 0) return documents;
+
+    // Collect unique user IDs
+    const userIds = new Set();
+    validDocs.forEach(doc => {
+      if (doc.uploadedBy) userIds.add(doc.uploadedBy);
+      if (doc.userId) userIds.add(doc.userId);
+    });
+
+    if (userIds.size === 0) return documents;
+
+    // Fetch all users at once using Supabase
+    const supabase = getSupabase();
+    const { data: users, error } = await supabase
+      .from('users')
+      .select('id, first_name, last_name, email')
+      .in('id', Array.from(userIds));
+
+    if (error) {
+      console.error('Error fetching users for documents:', error.message);
+      return documents;
+    }
+
+    const userMap = new Map(users.map(u => [u.id, u]));
+
+    // Enrich documents with user info
+    validDocs.forEach(doc => {
+      if (doc.uploadedBy && userMap.has(doc.uploadedBy)) {
+        const uploader = userMap.get(doc.uploadedBy);
+        doc.uploaderName = `${uploader.first_name || ''} ${uploader.last_name || ''}`.trim();
+        doc.uploaderEmail = uploader.email;
+      }
+      if (doc.userId && userMap.has(doc.userId)) {
+        const owner = userMap.get(doc.userId);
+        doc.ownerName = `${owner.first_name || ''} ${owner.last_name || ''}`.trim();
+        doc.ownerEmail = owner.email;
+      }
+    });
+
+    return isArray ? docs : docs[0];
   }
 
   /**
@@ -104,7 +161,8 @@ class Document {
       throw new Error(`Error finding document: ${error.message}`);
     }
 
-    return this._toModel(data);
+    const document = this._toModel(data);
+    return await this._enrichWithUserInfo(document);
   }
 
   /**
@@ -131,7 +189,8 @@ class Document {
       throw new Error(`Error finding documents: ${error.message}`);
     }
 
-    return data.map(item => this._toModel(item));
+    const documents = data.map(item => this._toModel(item));
+    return await this._enrichWithUserInfo(documents);
   }
 
   /**
@@ -205,14 +264,15 @@ class Document {
       .from('documents')
       .update(dbData)
       .eq('id', id)
-      .select()
+      .select('*')
       .single();
 
     if (error) {
       throw new Error(`Error updating document: ${error.message}`);
     }
 
-    return this._toModel(data);
+    const document = this._toModel(data);
+    return await this._enrichWithUserInfo(document);
   }
 
   /**
@@ -270,7 +330,8 @@ class Document {
       throw new Error(`Error searching documents: ${error.message}`);
     }
 
-    return data.map(item => this._toModel(item));
+    const documents = data.map(item => this._toModel(item));
+    return await this._enrichWithUserInfo(documents);
   }
 
   /**
@@ -315,7 +376,8 @@ class Document {
       throw new Error(`Error finding latest version: ${error.message}`);
     }
 
-    return this._toModel(data);
+    const document = this._toModel(data);
+    return await this._enrichWithUserInfo(document);
   }
 
   /**
@@ -369,7 +431,8 @@ class Document {
       throw new Error(`Error finding document versions: ${error.message}`);
     }
 
-    return data.map(item => this._toModel(item));
+    const documents = data.map(item => this._toModel(item));
+    return await this._enrichWithUserInfo(documents);
   }
 
   /**

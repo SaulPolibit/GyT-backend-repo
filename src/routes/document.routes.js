@@ -131,6 +131,31 @@ router.post('/', authenticate, handleDocumentUpload, catchAsync(async (req, res)
 }));
 
 /**
+ * @route   GET /api/documents/all
+ * @desc    Get all documents from all entities and all users (admin access)
+ * @access  Private (requires authentication)
+ * @note    This endpoint returns documents across all users - use with caution
+ */
+router.get('/all', authenticate, catchAsync(async (req, res) => {
+  const { entityType, documentType, isActive, entityId } = req.query;
+
+  let filter = {};
+
+  if (entityType) filter.entityType = entityType;
+  if (documentType) filter.documentType = documentType;
+  if (entityId) filter.entityId = entityId;
+  if (isActive !== undefined) filter.isActive = isActive === 'true';
+
+  const documents = await Document.find(filter);
+
+  res.status(200).json({
+    success: true,
+    count: documents.length,
+    data: documents
+  });
+}));
+
+/**
  * @route   GET /api/documents
  * @desc    Get all documents for authenticated user
  * @access  Private (requires authentication)
