@@ -237,6 +237,50 @@ const handleDocumentUpload = (req, res, next) => {
   });
 };
 
+// Configure multer for chat attachments (allow all file types)
+const chatAttachmentStorage = multer.memoryStorage();
+
+// Chat attachment filter - allow all file types
+const chatAttachmentFilter = (req, file, cb) => {
+  // Accept all file types for chat
+  cb(null, true);
+};
+
+// Configure multer for chat attachment upload
+const uploadChatAttachment = multer({
+  storage: chatAttachmentStorage,
+  fileFilter: chatAttachmentFilter,
+  limits: {
+    fileSize: 25 * 1024 * 1024 // 25MB max file size for chat
+  }
+});
+
+// Middleware to handle chat attachment upload with error handling
+const handleChatAttachmentUpload = (req, res, next) => {
+  const upload = uploadChatAttachment.single('file');
+
+  upload(req, res, (err) => {
+    if (err instanceof multer.MulterError) {
+      if (err.code === 'LIMIT_FILE_SIZE') {
+        return res.status(400).json({
+          success: false,
+          message: 'File too large. Maximum file size is 25MB'
+        });
+      }
+      return res.status(400).json({
+        success: false,
+        message: `Upload error: ${err.message}`
+      });
+    } else if (err) {
+      return res.status(400).json({
+        success: false,
+        message: err.message
+      });
+    }
+    next();
+  });
+};
+
 module.exports = {
   uploadProfileImage,
   deleteOldProfileImage,
@@ -245,5 +289,7 @@ module.exports = {
   uploadProjectImage,
   deleteOldProjectImage,
   uploadDocument,
-  handleDocumentUpload
+  handleDocumentUpload,
+  uploadChatAttachment,
+  handleChatAttachmentUpload
 };

@@ -36,7 +36,7 @@ class Distribution {
       lpTotalAmount: 'lp_total_amount',
       gpTotalAmount: 'gp_total_amount',
       managementFeeAmount: 'management_fee_amount',
-      userId: 'user_id',
+      createdBy: 'created_by',
       createdAt: 'created_at',
       updatedAt: 'updated_at'
     };
@@ -81,7 +81,7 @@ class Distribution {
       lpTotalAmount: dbData.lp_total_amount,
       gpTotalAmount: dbData.gp_total_amount,
       managementFeeAmount: dbData.management_fee_amount,
-      userId: dbData.user_id,
+      createdBy: dbData.created_by,
       createdAt: dbData.created_at,
       updatedAt: dbData.updated_at
     };
@@ -165,7 +165,7 @@ class Distribution {
    * Find distributions by user ID
    */
   static async findByUserId(userId) {
-    return this.find({ userId });
+    return this.find({ createdBy: userId });
   }
 
   /**

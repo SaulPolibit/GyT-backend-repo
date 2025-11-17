@@ -6,15 +6,16 @@ const express = require('express');
 const { authenticate } = require('../middleware/auth');
 const { catchAsync, validate } = require('../middleware/errorHandler');
 const { CapitalCall, Structure } = require('../models/supabase');
+const { requireInvestmentManagerAccess, getUserContext, ROLES } = require('../middleware/rbac');
 
 const router = express.Router();
 
 /**
  * @route   POST /api/capital-calls
  * @desc    Create a new capital call
- * @access  Private (requires authentication)
+ * @access  Private (requires authentication, Root/Admin only)
  */
-router.post('/', authenticate, catchAsync(async (req, res) => {
+router.post('/', authenticate, requireInvestmentManagerAccess, catchAsync(async (req, res) => {
   const userId = req.auth.userId || req.user.id;
 
   const {
@@ -37,7 +38,7 @@ router.post('/', authenticate, catchAsync(async (req, res) => {
   // Validate structure exists and belongs to user
   const structure = await Structure.findById(structureId);
   validate(structure, 'Structure not found');
-  validate(structure.userId === userId, 'Structure does not belong to user');
+  validate(structure.createdBy === userId, 'Structure does not belong to user');
 
   // Create capital call
   const capitalCallData = {
@@ -52,7 +53,7 @@ router.post('/', authenticate, catchAsync(async (req, res) => {
     purpose: purpose?.trim() || '',
     notes: notes?.trim() || '',
     investmentId: investmentId || null,
-    userId
+    createdBy: userId
   };
 
   const capitalCall = await CapitalCall.create(capitalCallData);
@@ -75,14 +76,20 @@ router.post('/', authenticate, catchAsync(async (req, res) => {
 
 /**
  * @route   GET /api/capital-calls
- * @desc    Get all capital calls for authenticated user
- * @access  Private (requires authentication)
+ * @desc    Get all capital calls (role-based filtering applied)
+ * @access  Private (requires authentication, Root/Admin only)
  */
-router.get('/', authenticate, catchAsync(async (req, res) => {
-  const userId = req.auth.userId || req.user.id;
+router.get('/', authenticate, requireInvestmentManagerAccess, catchAsync(async (req, res) => {
+  const { userId, userRole } = getUserContext(req);
   const { structureId, status } = req.query;
 
-  let filter = { userId };
+  let filter = {};
+
+  // Role-based filtering: Root sees all, Admin sees only their own
+  if (userRole === ROLES.ADMIN) {
+    filter.createdBy = userId;
+  }
+  // Root (role 0) sees all capital calls, so no userId filter
 
   if (structureId) filter.structureId = structureId;
   if (status) filter.status = status;
@@ -99,16 +106,20 @@ router.get('/', authenticate, catchAsync(async (req, res) => {
 /**
  * @route   GET /api/capital-calls/:id
  * @desc    Get a single capital call by ID
- * @access  Private (requires authentication)
+ * @access  Private (requires authentication, Root/Admin only)
  */
-router.get('/:id', authenticate, catchAsync(async (req, res) => {
-  const userId = req.auth.userId || req.user.id;
+router.get('/:id', authenticate, requireInvestmentManagerAccess, catchAsync(async (req, res) => {
+  const { userId, userRole } = getUserContext(req);
   const { id } = req.params;
 
   const capitalCall = await CapitalCall.findById(id);
 
   validate(capitalCall, 'Capital call not found');
-  validate(capitalCall.userId === userId, 'Unauthorized access to capital call');
+
+  // Root can access any capital call, Admin can only access their own
+  if (userRole === ROLES.ADMIN) {
+    validate(capitalCall.createdBy === userId, 'Unauthorized access to capital call');
+  }
 
   res.status(200).json({
     success: true,
@@ -119,15 +130,19 @@ router.get('/:id', authenticate, catchAsync(async (req, res) => {
 /**
  * @route   GET /api/capital-calls/:id/with-allocations
  * @desc    Get capital call with investor allocations
- * @access  Private (requires authentication)
+ * @access  Private (requires authentication, Root/Admin only)
  */
-router.get('/:id/with-allocations', authenticate, catchAsync(async (req, res) => {
-  const userId = req.auth.userId || req.user.id;
+router.get('/:id/with-allocations', authenticate, requireInvestmentManagerAccess, catchAsync(async (req, res) => {
+  const { userId, userRole } = getUserContext(req);
   const { id } = req.params;
 
   const capitalCall = await CapitalCall.findById(id);
   validate(capitalCall, 'Capital call not found');
-  validate(capitalCall.userId === userId, 'Unauthorized access to capital call');
+
+  // Root can access any capital call, Admin can only access their own
+  if (userRole === ROLES.ADMIN) {
+    validate(capitalCall.createdBy === userId, 'Unauthorized access to capital call');
+  }
 
   const capitalCallWithAllocations = await CapitalCall.findWithAllocations(id);
 
@@ -140,15 +155,19 @@ router.get('/:id/with-allocations', authenticate, catchAsync(async (req, res) =>
 /**
  * @route   GET /api/capital-calls/structure/:structureId/summary
  * @desc    Get capital call summary for a structure
- * @access  Private (requires authentication)
+ * @access  Private (requires authentication, Root/Admin only)
  */
-router.get('/structure/:structureId/summary', authenticate, catchAsync(async (req, res) => {
-  const userId = req.auth.userId || req.user.id;
+router.get('/structure/:structureId/summary', authenticate, requireInvestmentManagerAccess, catchAsync(async (req, res) => {
+  const { userId, userRole } = getUserContext(req);
   const { structureId } = req.params;
 
   const structure = await Structure.findById(structureId);
   validate(structure, 'Structure not found');
-  validate(structure.userId === userId, 'Unauthorized access to structure');
+
+  // Root can access any structure, Admin can only access their own
+  if (userRole === ROLES.ADMIN) {
+    validate(structure.createdBy === userId, 'Unauthorized access to structure');
+  }
 
   const summary = await CapitalCall.getSummary(structureId);
 
@@ -161,15 +180,19 @@ router.get('/structure/:structureId/summary', authenticate, catchAsync(async (re
 /**
  * @route   PUT /api/capital-calls/:id
  * @desc    Update a capital call
- * @access  Private (requires authentication)
+ * @access  Private (requires authentication, Root/Admin only)
  */
-router.put('/:id', authenticate, catchAsync(async (req, res) => {
-  const userId = req.auth.userId || req.user.id;
+router.put('/:id', authenticate, requireInvestmentManagerAccess, catchAsync(async (req, res) => {
+  const { userId, userRole } = getUserContext(req);
   const { id } = req.params;
 
   const capitalCall = await CapitalCall.findById(id);
   validate(capitalCall, 'Capital call not found');
-  validate(capitalCall.userId === userId, 'Unauthorized access to capital call');
+
+  // Root can edit any capital call, Admin can only edit their own
+  if (userRole === ROLES.ADMIN) {
+    validate(capitalCall.createdBy === userId, 'Unauthorized access to capital call');
+  }
 
   const updateData = {};
   const allowedFields = [
@@ -196,15 +219,19 @@ router.put('/:id', authenticate, catchAsync(async (req, res) => {
 /**
  * @route   PATCH /api/capital-calls/:id/send
  * @desc    Mark capital call as sent
- * @access  Private (requires authentication)
+ * @access  Private (requires authentication, Root/Admin only)
  */
-router.patch('/:id/send', authenticate, catchAsync(async (req, res) => {
-  const userId = req.auth.userId || req.user.id;
+router.patch('/:id/send', authenticate, requireInvestmentManagerAccess, catchAsync(async (req, res) => {
+  const { userId, userRole } = getUserContext(req);
   const { id } = req.params;
 
   const capitalCall = await CapitalCall.findById(id);
   validate(capitalCall, 'Capital call not found');
-  validate(capitalCall.userId === userId, 'Unauthorized access to capital call');
+
+  // Root can edit any capital call, Admin can only edit their own
+  if (userRole === ROLES.ADMIN) {
+    validate(capitalCall.createdBy === userId, 'Unauthorized access to capital call');
+  }
   validate(capitalCall.status === 'Draft', 'Capital call must be in Draft status to send');
 
   const updatedCapitalCall = await CapitalCall.markAsSent(id);
@@ -219,15 +246,19 @@ router.patch('/:id/send', authenticate, catchAsync(async (req, res) => {
 /**
  * @route   PATCH /api/capital-calls/:id/mark-paid
  * @desc    Mark capital call as fully paid
- * @access  Private (requires authentication)
+ * @access  Private (requires authentication, Root/Admin only)
  */
-router.patch('/:id/mark-paid', authenticate, catchAsync(async (req, res) => {
-  const userId = req.auth.userId || req.user.id;
+router.patch('/:id/mark-paid', authenticate, requireInvestmentManagerAccess, catchAsync(async (req, res) => {
+  const { userId, userRole } = getUserContext(req);
   const { id } = req.params;
 
   const capitalCall = await CapitalCall.findById(id);
   validate(capitalCall, 'Capital call not found');
-  validate(capitalCall.userId === userId, 'Unauthorized access to capital call');
+
+  // Root can edit any capital call, Admin can only edit their own
+  if (userRole === ROLES.ADMIN) {
+    validate(capitalCall.createdBy === userId, 'Unauthorized access to capital call');
+  }
 
   const updatedCapitalCall = await CapitalCall.markAsPaid(id);
 
@@ -241,10 +272,10 @@ router.patch('/:id/mark-paid', authenticate, catchAsync(async (req, res) => {
 /**
  * @route   PATCH /api/capital-calls/:id/update-payment
  * @desc    Update payment amounts for capital call
- * @access  Private (requires authentication)
+ * @access  Private (requires authentication, Root/Admin only)
  */
-router.patch('/:id/update-payment', authenticate, catchAsync(async (req, res) => {
-  const userId = req.auth.userId || req.user.id;
+router.patch('/:id/update-payment', authenticate, requireInvestmentManagerAccess, catchAsync(async (req, res) => {
+  const { userId, userRole } = getUserContext(req);
   const { id } = req.params;
   const { paidAmount } = req.body;
 
@@ -252,7 +283,11 @@ router.patch('/:id/update-payment', authenticate, catchAsync(async (req, res) =>
 
   const capitalCall = await CapitalCall.findById(id);
   validate(capitalCall, 'Capital call not found');
-  validate(capitalCall.userId === userId, 'Unauthorized access to capital call');
+
+  // Root can edit any capital call, Admin can only edit their own
+  if (userRole === ROLES.ADMIN) {
+    validate(capitalCall.createdBy === userId, 'Unauthorized access to capital call');
+  }
 
   const updatedCapitalCall = await CapitalCall.updatePaymentAmounts(id, paidAmount);
 
@@ -266,15 +301,19 @@ router.patch('/:id/update-payment', authenticate, catchAsync(async (req, res) =>
 /**
  * @route   POST /api/capital-calls/:id/create-allocations
  * @desc    Create allocations for all investors in structure
- * @access  Private (requires authentication)
+ * @access  Private (requires authentication, Root/Admin only)
  */
-router.post('/:id/create-allocations', authenticate, catchAsync(async (req, res) => {
-  const userId = req.auth.userId || req.user.id;
+router.post('/:id/create-allocations', authenticate, requireInvestmentManagerAccess, catchAsync(async (req, res) => {
+  const { userId, userRole } = getUserContext(req);
   const { id } = req.params;
 
   const capitalCall = await CapitalCall.findById(id);
   validate(capitalCall, 'Capital call not found');
-  validate(capitalCall.userId === userId, 'Unauthorized access to capital call');
+
+  // Root can edit any capital call, Admin can only edit their own
+  if (userRole === ROLES.ADMIN) {
+    validate(capitalCall.createdBy === userId, 'Unauthorized access to capital call');
+  }
 
   const structure = await Structure.findById(capitalCall.structureId);
   validate(structure, 'Structure not found');
@@ -291,15 +330,19 @@ router.post('/:id/create-allocations', authenticate, catchAsync(async (req, res)
 /**
  * @route   DELETE /api/capital-calls/:id
  * @desc    Delete a capital call
- * @access  Private (requires authentication)
+ * @access  Private (requires authentication, Root/Admin only)
  */
-router.delete('/:id', authenticate, catchAsync(async (req, res) => {
-  const userId = req.auth.userId || req.user.id;
+router.delete('/:id', authenticate, requireInvestmentManagerAccess, catchAsync(async (req, res) => {
+  const { userId, userRole } = getUserContext(req);
   const { id } = req.params;
 
   const capitalCall = await CapitalCall.findById(id);
   validate(capitalCall, 'Capital call not found');
-  validate(capitalCall.userId === userId, 'Unauthorized access to capital call');
+
+  // Root can delete any capital call, Admin can only delete their own
+  if (userRole === ROLES.ADMIN) {
+    validate(capitalCall.createdBy === userId, 'Unauthorized access to capital call');
+  }
 
   await CapitalCall.findByIdAndDelete(id);
 

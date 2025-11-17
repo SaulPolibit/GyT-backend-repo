@@ -6,15 +6,16 @@ const express = require('express');
 const { authenticate } = require('../middleware/auth');
 const { catchAsync, validate } = require('../middleware/errorHandler');
 const { Investment, Structure } = require('../models/supabase');
+const { requireInvestmentManagerAccess, getUserContext, ROLES } = require('../middleware/rbac');
 
 const router = express.Router();
 
 /**
  * @route   POST /api/investments
  * @desc    Create a new investment
- * @access  Private (requires authentication)
+ * @access  Private (requires authentication, Root/Admin only)
  */
-router.post('/', authenticate, catchAsync(async (req, res) => {
+router.post('/', authenticate, requireInvestmentManagerAccess, catchAsync(async (req, res) => {
   const userId = req.auth.userId || req.user.id;
 
   const {
@@ -46,7 +47,7 @@ router.post('/', authenticate, catchAsync(async (req, res) => {
   // Validate structure exists and belongs to user
   const structure = await Structure.findById(structureId);
   validate(structure, 'Structure not found');
-  validate(structure.userId === userId, 'Structure does not belong to user');
+  validate(structure.createdBy === userId, 'Structure does not belong to user');
 
   // Validate type-specific fields
   if (investmentType === 'EQUITY' || investmentType === 'MIXED') {
@@ -88,7 +89,7 @@ router.post('/', authenticate, catchAsync(async (req, res) => {
     geography: geography?.trim() || '',
     currency: currency || 'USD',
     notes: notes?.trim() || '',
-    userId
+    createdBy: userId
   };
 
   const investment = await Investment.create(investmentData);
@@ -102,14 +103,20 @@ router.post('/', authenticate, catchAsync(async (req, res) => {
 
 /**
  * @route   GET /api/investments
- * @desc    Get all investments for authenticated user
- * @access  Private (requires authentication)
+ * @desc    Get all investments (role-based filtering applied)
+ * @access  Private (requires authentication, Root/Admin only)
  */
-router.get('/', authenticate, catchAsync(async (req, res) => {
-  const userId = req.auth.userId || req.user.id;
+router.get('/', authenticate, requireInvestmentManagerAccess, catchAsync(async (req, res) => {
+  const { userId, userRole } = getUserContext(req);
   const { structureId, projectId, investmentType, status } = req.query;
 
-  let filter = { userId };
+  let filter = {};
+
+  // Role-based filtering: Root sees all, Admin sees only their own
+  if (userRole === ROLES.ADMIN) {
+    filter.createdBy = userId;
+  }
+  // Root (role 0) sees all investments, so no userId filter
 
   if (structureId) filter.structureId = structureId;
   if (projectId) filter.projectId = projectId;
@@ -127,17 +134,19 @@ router.get('/', authenticate, catchAsync(async (req, res) => {
 
 /**
  * @route   GET /api/investments/active
- * @desc    Get all active investments
- * @access  Private (requires authentication)
+ * @desc    Get all active investments (role-based filtering applied)
+ * @access  Private (requires authentication, Root/Admin only)
  */
-router.get('/active', authenticate, catchAsync(async (req, res) => {
-  const userId = req.auth.userId || req.user.id;
+router.get('/active', authenticate, requireInvestmentManagerAccess, catchAsync(async (req, res) => {
+  const { userId, userRole } = getUserContext(req);
   const { structureId } = req.query;
 
   const investments = await Investment.findActive(structureId);
 
-  // Filter by userId
-  const userInvestments = investments.filter(inv => inv.userId === userId);
+  // Role-based filtering: Root sees all, Admin sees only their own
+  const userInvestments = userRole === ROLES.ROOT
+    ? investments
+    : investments.filter(inv => inv.createdBy === userId);
 
   res.status(200).json({
     success: true,
@@ -149,16 +158,20 @@ router.get('/active', authenticate, catchAsync(async (req, res) => {
 /**
  * @route   GET /api/investments/:id
  * @desc    Get a single investment by ID
- * @access  Private (requires authentication)
+ * @access  Private (requires authentication, Root/Admin only)
  */
-router.get('/:id', authenticate, catchAsync(async (req, res) => {
-  const userId = req.auth.userId || req.user.id;
+router.get('/:id', authenticate, requireInvestmentManagerAccess, catchAsync(async (req, res) => {
+  const { userId, userRole } = getUserContext(req);
   const { id } = req.params;
 
   const investment = await Investment.findById(id);
 
   validate(investment, 'Investment not found');
-  validate(investment.userId === userId, 'Unauthorized access to investment');
+
+  // Root can access any investment, Admin can only access their own
+  if (userRole === ROLES.ADMIN) {
+    validate(investment.createdBy === userId, 'Unauthorized access to investment');
+  }
 
   res.status(200).json({
     success: true,
@@ -169,15 +182,19 @@ router.get('/:id', authenticate, catchAsync(async (req, res) => {
 /**
  * @route   GET /api/investments/:id/with-structure
  * @desc    Get investment with structure details
- * @access  Private (requires authentication)
+ * @access  Private (requires authentication, Root/Admin only)
  */
-router.get('/:id/with-structure', authenticate, catchAsync(async (req, res) => {
-  const userId = req.auth.userId || req.user.id;
+router.get('/:id/with-structure', authenticate, requireInvestmentManagerAccess, catchAsync(async (req, res) => {
+  const { userId, userRole } = getUserContext(req);
   const { id } = req.params;
 
   const investment = await Investment.findById(id);
   validate(investment, 'Investment not found');
-  validate(investment.userId === userId, 'Unauthorized access to investment');
+
+  // Root can access any investment, Admin can only access their own
+  if (userRole === ROLES.ADMIN) {
+    validate(investment.createdBy === userId, 'Unauthorized access to investment');
+  }
 
   const investmentWithStructure = await Investment.findWithStructure(id);
 
@@ -190,15 +207,19 @@ router.get('/:id/with-structure', authenticate, catchAsync(async (req, res) => {
 /**
  * @route   PUT /api/investments/:id
  * @desc    Update an investment
- * @access  Private (requires authentication)
+ * @access  Private (requires authentication, Root/Admin only)
  */
-router.put('/:id', authenticate, catchAsync(async (req, res) => {
-  const userId = req.auth.userId || req.user.id;
+router.put('/:id', authenticate, requireInvestmentManagerAccess, catchAsync(async (req, res) => {
+  const { userId, userRole } = getUserContext(req);
   const { id } = req.params;
 
   const investment = await Investment.findById(id);
   validate(investment, 'Investment not found');
-  validate(investment.userId === userId, 'Unauthorized access to investment');
+
+  // Root can edit any investment, Admin can only edit their own
+  if (userRole === ROLES.ADMIN) {
+    validate(investment.createdBy === userId, 'Unauthorized access to investment');
+  }
 
   const updateData = {};
   const allowedFields = [
@@ -228,16 +249,20 @@ router.put('/:id', authenticate, catchAsync(async (req, res) => {
 /**
  * @route   PATCH /api/investments/:id/performance
  * @desc    Update investment performance metrics
- * @access  Private (requires authentication)
+ * @access  Private (requires authentication, Root/Admin only)
  */
-router.patch('/:id/performance', authenticate, catchAsync(async (req, res) => {
-  const userId = req.auth.userId || req.user.id;
+router.patch('/:id/performance', authenticate, requireInvestmentManagerAccess, catchAsync(async (req, res) => {
+  const { userId, userRole } = getUserContext(req);
   const { id } = req.params;
   const { irrPercent, moic, totalReturns, equityCurrentValue, outstandingPrincipal } = req.body;
 
   const investment = await Investment.findById(id);
   validate(investment, 'Investment not found');
-  validate(investment.userId === userId, 'Unauthorized access to investment');
+
+  // Root can edit any investment, Admin can only edit their own
+  if (userRole === ROLES.ADMIN) {
+    validate(investment.createdBy === userId, 'Unauthorized access to investment');
+  }
 
   const metrics = {};
   if (irrPercent !== undefined) metrics.irrPercent = irrPercent;
@@ -260,16 +285,20 @@ router.patch('/:id/performance', authenticate, catchAsync(async (req, res) => {
 /**
  * @route   PATCH /api/investments/:id/exit
  * @desc    Mark investment as exited
- * @access  Private (requires authentication)
+ * @access  Private (requires authentication, Root/Admin only)
  */
-router.patch('/:id/exit', authenticate, catchAsync(async (req, res) => {
-  const userId = req.auth.userId || req.user.id;
+router.patch('/:id/exit', authenticate, requireInvestmentManagerAccess, catchAsync(async (req, res) => {
+  const { userId, userRole } = getUserContext(req);
   const { id } = req.params;
   const { exitDate, equityExitValue } = req.body;
 
   const investment = await Investment.findById(id);
   validate(investment, 'Investment not found');
-  validate(investment.userId === userId, 'Unauthorized access to investment');
+
+  // Root can edit any investment, Admin can only edit their own
+  if (userRole === ROLES.ADMIN) {
+    validate(investment.createdBy === userId, 'Unauthorized access to investment');
+  }
 
   const exitData = {
     exitDate: exitDate || new Date().toISOString()
@@ -291,15 +320,19 @@ router.patch('/:id/exit', authenticate, catchAsync(async (req, res) => {
 /**
  * @route   GET /api/investments/structure/:structureId/portfolio
  * @desc    Get portfolio summary for a structure
- * @access  Private (requires authentication)
+ * @access  Private (requires authentication, Root/Admin only)
  */
-router.get('/structure/:structureId/portfolio', authenticate, catchAsync(async (req, res) => {
-  const userId = req.auth.userId || req.user.id;
+router.get('/structure/:structureId/portfolio', authenticate, requireInvestmentManagerAccess, catchAsync(async (req, res) => {
+  const { userId, userRole } = getUserContext(req);
   const { structureId } = req.params;
 
   const structure = await Structure.findById(structureId);
   validate(structure, 'Structure not found');
-  validate(structure.userId === userId, 'Unauthorized access to structure');
+
+  // Root can access any structure, Admin can only access their own
+  if (userRole === ROLES.ADMIN) {
+    validate(structure.createdBy === userId, 'Unauthorized access to structure');
+  }
 
   const portfolio = await Investment.getPortfolioSummary(structureId);
 
@@ -312,15 +345,19 @@ router.get('/structure/:structureId/portfolio', authenticate, catchAsync(async (
 /**
  * @route   DELETE /api/investments/:id
  * @desc    Delete an investment
- * @access  Private (requires authentication)
+ * @access  Private (requires authentication, Root/Admin only)
  */
-router.delete('/:id', authenticate, catchAsync(async (req, res) => {
-  const userId = req.auth.userId || req.user.id;
+router.delete('/:id', authenticate, requireInvestmentManagerAccess, catchAsync(async (req, res) => {
+  const { userId, userRole } = getUserContext(req);
   const { id } = req.params;
 
   const investment = await Investment.findById(id);
   validate(investment, 'Investment not found');
-  validate(investment.userId === userId, 'Unauthorized access to investment');
+
+  // Root can delete any investment, Admin can only delete their own
+  if (userRole === ROLES.ADMIN) {
+    validate(investment.createdBy === userId, 'Unauthorized access to investment');
+  }
 
   await Investment.findByIdAndDelete(id);
 

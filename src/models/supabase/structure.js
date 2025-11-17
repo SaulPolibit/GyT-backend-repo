@@ -43,7 +43,8 @@ class Structure {
       investmentStrategy: 'investment_strategy',
       targetReturns: 'target_returns',
       riskProfile: 'risk_profile',
-      userId: 'user_id',
+      stage: 'stage',
+      createdBy: 'created_by',
       createdAt: 'created_at',
       updatedAt: 'updated_at'
     };
@@ -95,7 +96,8 @@ class Structure {
       investmentStrategy: dbData.investment_strategy,
       targetReturns: dbData.target_returns,
       riskProfile: dbData.risk_profile,
-      userId: dbData.user_id,
+      stage: dbData.stage,
+      createdBy: dbData.created_by,
       createdAt: dbData.created_at,
       updatedAt: dbData.updated_at
     };
@@ -170,7 +172,7 @@ class Structure {
    * Find structures by user ID
    */
   static async findByUserId(userId) {
-    return this.find({ userId });
+    return this.find({ createdBy: userId });
   }
 
   /**
@@ -207,7 +209,7 @@ class Structure {
     const { data, error } = await supabase
       .from('structures')
       .select('*')
-      .eq('user_id', userId)
+      .eq('created_by', userId)
       .is('parent_structure_id', null)
       .order('created_at', { ascending: false });
 

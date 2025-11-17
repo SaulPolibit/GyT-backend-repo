@@ -6,15 +6,16 @@ const express = require('express');
 const { authenticate } = require('../middleware/auth');
 const { catchAsync, validate } = require('../middleware/errorHandler');
 const { Distribution, Structure } = require('../models/supabase');
+const { requireInvestmentManagerAccess, getUserContext, ROLES } = require('../middleware/rbac');
 
 const router = express.Router();
 
 /**
  * @route   POST /api/distributions
  * @desc    Create a new distribution
- * @access  Private (requires authentication)
+ * @access  Private (requires authentication, Root/Admin only)
  */
-router.post('/', authenticate, catchAsync(async (req, res) => {
+router.post('/', authenticate, requireInvestmentManagerAccess, catchAsync(async (req, res) => {
   const userId = req.auth.userId || req.user.id;
 
   const {
@@ -41,7 +42,7 @@ router.post('/', authenticate, catchAsync(async (req, res) => {
   // Validate structure exists and belongs to user
   const structure = await Structure.findById(structureId);
   validate(structure, 'Structure not found');
-  validate(structure.userId === userId, 'Structure does not belong to user');
+  validate(structure.createdBy === userId, 'Structure does not belong to user');
 
   // Create distribution
   const distributionData = {
@@ -68,7 +69,7 @@ router.post('/', authenticate, catchAsync(async (req, res) => {
     lpTotalAmount: 0,
     gpTotalAmount: 0,
     managementFeeAmount: 0,
-    userId
+    createdBy: userId
   };
 
   const distribution = await Distribution.create(distributionData);
@@ -91,14 +92,20 @@ router.post('/', authenticate, catchAsync(async (req, res) => {
 
 /**
  * @route   GET /api/distributions
- * @desc    Get all distributions for authenticated user
- * @access  Private (requires authentication)
+ * @desc    Get all distributions (role-based filtering applied)
+ * @access  Private (requires authentication, Root/Admin only)
  */
-router.get('/', authenticate, catchAsync(async (req, res) => {
-  const userId = req.auth.userId || req.user.id;
+router.get('/', authenticate, requireInvestmentManagerAccess, catchAsync(async (req, res) => {
+  const { userId, userRole } = getUserContext(req);
   const { structureId, status } = req.query;
 
-  let filter = { userId };
+  let filter = {};
+
+  // Role-based filtering: Root sees all, Admin sees only their own
+  if (userRole === ROLES.ADMIN) {
+    filter.createdBy = userId;
+  }
+  // Root (role 0) sees all distributions, so no userId filter
 
   if (structureId) filter.structureId = structureId;
   if (status) filter.status = status;
@@ -115,16 +122,20 @@ router.get('/', authenticate, catchAsync(async (req, res) => {
 /**
  * @route   GET /api/distributions/:id
  * @desc    Get a single distribution by ID
- * @access  Private (requires authentication)
+ * @access  Private (requires authentication, Root/Admin only)
  */
-router.get('/:id', authenticate, catchAsync(async (req, res) => {
-  const userId = req.auth.userId || req.user.id;
+router.get('/:id', authenticate, requireInvestmentManagerAccess, catchAsync(async (req, res) => {
+  const { userId, userRole } = getUserContext(req);
   const { id } = req.params;
 
   const distribution = await Distribution.findById(id);
 
   validate(distribution, 'Distribution not found');
-  validate(distribution.userId === userId, 'Unauthorized access to distribution');
+
+  // Root can access any distribution, Admin can only access their own
+  if (userRole === ROLES.ADMIN) {
+    validate(distribution.createdBy === userId, 'Unauthorized access to distribution');
+  }
 
   res.status(200).json({
     success: true,
@@ -135,15 +146,19 @@ router.get('/:id', authenticate, catchAsync(async (req, res) => {
 /**
  * @route   GET /api/distributions/:id/with-allocations
  * @desc    Get distribution with investor allocations
- * @access  Private (requires authentication)
+ * @access  Private (requires authentication, Root/Admin only)
  */
-router.get('/:id/with-allocations', authenticate, catchAsync(async (req, res) => {
-  const userId = req.auth.userId || req.user.id;
+router.get('/:id/with-allocations', authenticate, requireInvestmentManagerAccess, catchAsync(async (req, res) => {
+  const { userId, userRole } = getUserContext(req);
   const { id } = req.params;
 
   const distribution = await Distribution.findById(id);
   validate(distribution, 'Distribution not found');
-  validate(distribution.userId === userId, 'Unauthorized access to distribution');
+
+  // Root can access any distribution, Admin can only access their own
+  if (userRole === ROLES.ADMIN) {
+    validate(distribution.createdBy === userId, 'Unauthorized access to distribution');
+  }
 
   const distributionWithAllocations = await Distribution.findWithAllocations(id);
 
@@ -156,15 +171,19 @@ router.get('/:id/with-allocations', authenticate, catchAsync(async (req, res) =>
 /**
  * @route   GET /api/distributions/structure/:structureId/summary
  * @desc    Get distribution summary for a structure
- * @access  Private (requires authentication)
+ * @access  Private (requires authentication, Root/Admin only)
  */
-router.get('/structure/:structureId/summary', authenticate, catchAsync(async (req, res) => {
-  const userId = req.auth.userId || req.user.id;
+router.get('/structure/:structureId/summary', authenticate, requireInvestmentManagerAccess, catchAsync(async (req, res) => {
+  const { userId, userRole } = getUserContext(req);
   const { structureId } = req.params;
 
   const structure = await Structure.findById(structureId);
   validate(structure, 'Structure not found');
-  validate(structure.userId === userId, 'Unauthorized access to structure');
+
+  // Root can access any structure, Admin can only access their own
+  if (userRole === ROLES.ADMIN) {
+    validate(structure.createdBy === userId, 'Unauthorized access to structure');
+  }
 
   const summary = await Distribution.getSummary(structureId);
 
@@ -177,15 +196,19 @@ router.get('/structure/:structureId/summary', authenticate, catchAsync(async (re
 /**
  * @route   PUT /api/distributions/:id
  * @desc    Update a distribution
- * @access  Private (requires authentication)
+ * @access  Private (requires authentication, Root/Admin only)
  */
-router.put('/:id', authenticate, catchAsync(async (req, res) => {
-  const userId = req.auth.userId || req.user.id;
+router.put('/:id', authenticate, requireInvestmentManagerAccess, catchAsync(async (req, res) => {
+  const { userId, userRole } = getUserContext(req);
   const { id } = req.params;
 
   const distribution = await Distribution.findById(id);
   validate(distribution, 'Distribution not found');
-  validate(distribution.userId === userId, 'Unauthorized access to distribution');
+
+  // Root can edit any distribution, Admin can only edit their own
+  if (userRole === ROLES.ADMIN) {
+    validate(distribution.createdBy === userId, 'Unauthorized access to distribution');
+  }
 
   const updateData = {};
   const allowedFields = [
@@ -215,15 +238,19 @@ router.put('/:id', authenticate, catchAsync(async (req, res) => {
 /**
  * @route   POST /api/distributions/:id/apply-waterfall
  * @desc    Apply waterfall calculation to distribution
- * @access  Private (requires authentication)
+ * @access  Private (requires authentication, Root/Admin only)
  */
-router.post('/:id/apply-waterfall', authenticate, catchAsync(async (req, res) => {
-  const userId = req.auth.userId || req.user.id;
+router.post('/:id/apply-waterfall', authenticate, requireInvestmentManagerAccess, catchAsync(async (req, res) => {
+  const { userId, userRole } = getUserContext(req);
   const { id } = req.params;
 
   const distribution = await Distribution.findById(id);
   validate(distribution, 'Distribution not found');
-  validate(distribution.userId === userId, 'Unauthorized access to distribution');
+
+  // Root can edit any distribution, Admin can only edit their own
+  if (userRole === ROLES.ADMIN) {
+    validate(distribution.createdBy === userId, 'Unauthorized access to distribution');
+  }
   validate(!distribution.waterfallApplied, 'Waterfall already applied to this distribution');
 
   const structure = await Structure.findById(distribution.structureId);
@@ -241,15 +268,19 @@ router.post('/:id/apply-waterfall', authenticate, catchAsync(async (req, res) =>
 /**
  * @route   PATCH /api/distributions/:id/mark-paid
  * @desc    Mark distribution as paid
- * @access  Private (requires authentication)
+ * @access  Private (requires authentication, Root/Admin only)
  */
-router.patch('/:id/mark-paid', authenticate, catchAsync(async (req, res) => {
-  const userId = req.auth.userId || req.user.id;
+router.patch('/:id/mark-paid', authenticate, requireInvestmentManagerAccess, catchAsync(async (req, res) => {
+  const { userId, userRole } = getUserContext(req);
   const { id } = req.params;
 
   const distribution = await Distribution.findById(id);
   validate(distribution, 'Distribution not found');
-  validate(distribution.userId === userId, 'Unauthorized access to distribution');
+
+  // Root can edit any distribution, Admin can only edit their own
+  if (userRole === ROLES.ADMIN) {
+    validate(distribution.createdBy === userId, 'Unauthorized access to distribution');
+  }
 
   const updatedDistribution = await Distribution.markAsPaid(id);
 
@@ -263,15 +294,19 @@ router.patch('/:id/mark-paid', authenticate, catchAsync(async (req, res) => {
 /**
  * @route   POST /api/distributions/:id/create-allocations
  * @desc    Create allocations for all investors in structure
- * @access  Private (requires authentication)
+ * @access  Private (requires authentication, Root/Admin only)
  */
-router.post('/:id/create-allocations', authenticate, catchAsync(async (req, res) => {
-  const userId = req.auth.userId || req.user.id;
+router.post('/:id/create-allocations', authenticate, requireInvestmentManagerAccess, catchAsync(async (req, res) => {
+  const { userId, userRole } = getUserContext(req);
   const { id } = req.params;
 
   const distribution = await Distribution.findById(id);
   validate(distribution, 'Distribution not found');
-  validate(distribution.userId === userId, 'Unauthorized access to distribution');
+
+  // Root can edit any distribution, Admin can only edit their own
+  if (userRole === ROLES.ADMIN) {
+    validate(distribution.createdBy === userId, 'Unauthorized access to distribution');
+  }
 
   const structure = await Structure.findById(distribution.structureId);
   validate(structure, 'Structure not found');
@@ -288,10 +323,10 @@ router.post('/:id/create-allocations', authenticate, catchAsync(async (req, res)
 /**
  * @route   GET /api/distributions/investor/:investorId/total
  * @desc    Get total distributions for an investor in a structure
- * @access  Private (requires authentication)
+ * @access  Private (requires authentication, Root/Admin only)
  */
-router.get('/investor/:investorId/total', authenticate, catchAsync(async (req, res) => {
-  const userId = req.auth.userId || req.user.id;
+router.get('/investor/:investorId/total', authenticate, requireInvestmentManagerAccess, catchAsync(async (req, res) => {
+  const { userId, userRole } = getUserContext(req);
   const { investorId } = req.params;
   const { structureId } = req.query;
 
@@ -299,7 +334,11 @@ router.get('/investor/:investorId/total', authenticate, catchAsync(async (req, r
 
   const structure = await Structure.findById(structureId);
   validate(structure, 'Structure not found');
-  validate(structure.userId === userId, 'Unauthorized access to structure');
+
+  // Root can access any structure, Admin can only access their own
+  if (userRole === ROLES.ADMIN) {
+    validate(structure.createdBy === userId, 'Unauthorized access to structure');
+  }
 
   const total = await Distribution.getInvestorDistributionTotal(investorId, structureId);
 
@@ -312,15 +351,19 @@ router.get('/investor/:investorId/total', authenticate, catchAsync(async (req, r
 /**
  * @route   DELETE /api/distributions/:id
  * @desc    Delete a distribution
- * @access  Private (requires authentication)
+ * @access  Private (requires authentication, Root/Admin only)
  */
-router.delete('/:id', authenticate, catchAsync(async (req, res) => {
-  const userId = req.auth.userId || req.user.id;
+router.delete('/:id', authenticate, requireInvestmentManagerAccess, catchAsync(async (req, res) => {
+  const { userId, userRole } = getUserContext(req);
   const { id } = req.params;
 
   const distribution = await Distribution.findById(id);
   validate(distribution, 'Distribution not found');
-  validate(distribution.userId === userId, 'Unauthorized access to distribution');
+
+  // Root can delete any distribution, Admin can only delete their own
+  if (userRole === ROLES.ADMIN) {
+    validate(distribution.createdBy === userId, 'Unauthorized access to distribution');
+  }
 
   await Distribution.findByIdAndDelete(id);
 

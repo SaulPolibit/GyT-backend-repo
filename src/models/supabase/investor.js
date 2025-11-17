@@ -23,8 +23,7 @@ class Investor {
       riskTolerance: 'risk_tolerance',
       investmentPreferences: 'investment_preferences',
       // Individual fields
-      firstName: 'first_name',
-      lastName: 'last_name',
+      fullName: 'full_name',
       dateOfBirth: 'date_of_birth',
       nationality: 'nationality',
       passportNumber: 'passport_number',
@@ -47,7 +46,7 @@ class Investor {
       familyName: 'family_name',
       principalContact: 'principal_contact',
       assetsUnderManagement: 'assets_under_management',
-      userId: 'user_id',
+      createdBy: 'created_by',
       createdAt: 'created_at',
       updatedAt: 'updated_at'
     };
@@ -79,8 +78,7 @@ class Investor {
       riskTolerance: dbData.risk_tolerance,
       investmentPreferences: dbData.investment_preferences,
       // Individual fields
-      firstName: dbData.first_name,
-      lastName: dbData.last_name,
+      fullName: dbData.full_name,
       dateOfBirth: dbData.date_of_birth,
       nationality: dbData.nationality,
       passportNumber: dbData.passport_number,
@@ -103,7 +101,7 @@ class Investor {
       familyName: dbData.family_name,
       principalContact: dbData.principal_contact,
       assetsUnderManagement: dbData.assets_under_management,
-      userId: dbData.user_id,
+      createdBy: dbData.created_by,
       createdAt: dbData.created_at,
       updatedAt: dbData.updated_at
     };
@@ -198,7 +196,7 @@ class Investor {
    * Find investors by user ID
    */
   static async findByUserId(userId) {
-    return this.find({ userId });
+    return this.find({ createdBy: userId });
   }
 
   /**
@@ -206,7 +204,7 @@ class Investor {
    */
   static async findByType(investorType, userId) {
     const filter = { investorType };
-    if (userId) filter.userId = userId;
+    if (userId) filter.createdBy = userId;
     return this.find(filter);
   }
 
@@ -217,6 +215,9 @@ class Investor {
     const supabase = getSupabase();
     const dbData = this._toDbFields(updateData);
 
+    console.log('=== MODEL UPDATE DEBUG ===');
+    console.log('DB Data (snake_case):', JSON.stringify(dbData, null, 2));
+
     const { data, error } = await supabase
       .from('investors')
       .update(dbData)
@@ -225,8 +226,12 @@ class Investor {
       .single();
 
     if (error) {
+      console.log('Supabase Error:', error);
       throw new Error(`Error updating investor: ${error.message}`);
     }
+
+    console.log('Supabase Response Data:', JSON.stringify(data, null, 2));
+    console.log('==========================');
 
     return this._toModel(data);
   }
@@ -304,11 +309,11 @@ class Investor {
       .select('*');
 
     if (userId) {
-      query = query.eq('user_id', userId);
+      query = query.eq('created_by', userId);
     }
 
     // Search across multiple fields depending on investor type
-    query = query.or(`email.ilike.*${searchTerm}*,first_name.ilike.*${searchTerm}*,last_name.ilike.*${searchTerm}*,institution_name.ilike.*${searchTerm}*,fund_name.ilike.*${searchTerm}*,office_name.ilike.*${searchTerm}*`);
+    query = query.or(`email.ilike.*${searchTerm}*,full_name.ilike.*${searchTerm}*,institution_name.ilike.*${searchTerm}*,fund_name.ilike.*${searchTerm}*,office_name.ilike.*${searchTerm}*`);
 
     const { data, error } = await query;
 
@@ -325,7 +330,7 @@ class Investor {
   static getDisplayName(investor) {
     switch (investor.investorType) {
       case 'Individual':
-        return `${investor.firstName} ${investor.lastName}`;
+        return investor.fullName;
       case 'Institution':
         return investor.institutionName;
       case 'Fund of Funds':

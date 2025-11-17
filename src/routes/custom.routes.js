@@ -83,13 +83,29 @@ router.post('/login', catchAsync(async (req, res) => {
 
 // Add this REGISTER route
 router.post('/register', authenticate, catchAsync(async (req, res) => {
-  const { email, password, firstName, lastName } = req.body;
+  const { email, password, firstName, lastName, role } = req.body;
 
   // Validate input
   if (!email || !password || !firstName) {
     return res.status(400).json({
       success: false,
       message: 'Email, password, and firstName are required'
+    });
+  }
+
+  // Validate role is required
+  if (role === undefined || role === null) {
+    return res.status(400).json({
+      success: false,
+      message: 'Role is required. Must be 0 (root), 1 (admin), or 2 (investor)'
+    });
+  }
+
+  // Validate role value
+  if (role !== 0 && role !== 1 && role !== 2) {
+    return res.status(400).json({
+      success: false,
+      message: 'Invalid role. Must be 0 (root), 1 (admin), or 2 (investor)'
     });
   }
 
@@ -108,7 +124,7 @@ router.post('/register', authenticate, catchAsync(async (req, res) => {
     password,
     firstName,
     lastName: lastName || '',
-    role: 'user'
+    role
   });
 
   // Create token
@@ -146,12 +162,13 @@ router.post('/register', authenticate, catchAsync(async (req, res) => {
  *            lastName?: string,
  *            email?: string,
  *            appLanguage?: string,
+ *            role?: number (0: root, 1: admin, 2: investor),
  *            newPassword?: string,
  *            oldPassword?: string (required if newPassword is provided)
  *          }
  */
 router.put('/user/profile', authenticate, catchAsync(async (req, res) => {
-  const { firstName, lastName, email, appLanguage, newPassword, oldPassword } = req.body;
+  const { firstName, lastName, email, appLanguage, newPassword, oldPassword, role } = req.body;
 
   // Get user ID from authenticated token
   const userId = req.auth.userId || req.user.id;
@@ -218,6 +235,18 @@ router.put('/user/profile', authenticate, catchAsync(async (req, res) => {
     }
 
     updateData.email = email.toLowerCase().trim();
+  }
+
+  // Validate role if being updated
+  if (role !== undefined && role !== null) {
+    // Validate role value
+    if (role !== 0 && role !== 1 && role !== 2) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid role. Must be 0 (root), 1 (admin), or 2 (investor)'
+      });
+    }
+    updateData.role = role;
   }
 
   if (appLanguage !== undefined) {

@@ -6,15 +6,16 @@ const express = require('express');
 const { authenticate } = require('../middleware/auth');
 const { catchAsync, validate } = require('../middleware/errorHandler');
 const { Investor } = require('../models/supabase');
+const { requireInvestmentManagerAccess, getUserContext, ROLES } = require('../middleware/rbac');
 
 const router = express.Router();
 
 /**
  * @route   POST /api/investors
  * @desc    Create a new investor
- * @access  Private (requires authentication)
+ * @access  Private (requires authentication, Root/Admin only)
  */
-router.post('/', authenticate, catchAsync(async (req, res) => {
+router.post('/', authenticate, requireInvestmentManagerAccess, catchAsync(async (req, res) => {
   const userId = req.auth.userId || req.user.id;
 
   const {
@@ -28,8 +29,7 @@ router.post('/', authenticate, catchAsync(async (req, res) => {
     riskTolerance,
     investmentPreferences,
     // Individual fields
-    firstName,
-    lastName,
+    fullName,
     dateOfBirth,
     nationality,
     passportNumber,
@@ -69,8 +69,7 @@ router.post('/', authenticate, catchAsync(async (req, res) => {
 
   // Validate type-specific required fields
   if (investorType === 'Individual') {
-    validate(firstName, 'First name is required for individual investors');
-    validate(lastName, 'Last name is required for individual investors');
+    validate(fullName, 'Full name is required for individual investors');
   } else if (investorType === 'Institution') {
     validate(institutionName, 'Institution name is required');
   } else if (investorType === 'Fund of Funds') {
@@ -90,13 +89,12 @@ router.post('/', authenticate, catchAsync(async (req, res) => {
     accreditedInvestor: accreditedInvestor || false,
     riskTolerance: riskTolerance?.trim() || '',
     investmentPreferences: investmentPreferences || {},
-    userId
+    createdBy: userId
   };
 
   // Add type-specific fields
   if (investorType === 'Individual') {
-    investorData.firstName = firstName.trim();
-    investorData.lastName = lastName.trim();
+    investorData.fullName = fullName.trim();
     investorData.dateOfBirth = dateOfBirth || null;
     investorData.nationality = nationality?.trim() || '';
     investorData.passportNumber = passportNumber?.trim() || '';
@@ -132,14 +130,20 @@ router.post('/', authenticate, catchAsync(async (req, res) => {
 
 /**
  * @route   GET /api/investors
- * @desc    Get all investors for authenticated user
- * @access  Private (requires authentication)
+ * @desc    Get all investors (role-based filtering applied)
+ * @access  Private (requires authentication, Root/Admin only)
  */
-router.get('/', authenticate, catchAsync(async (req, res) => {
-  const userId = req.auth.userId || req.user.id;
+router.get('/', authenticate, requireInvestmentManagerAccess, catchAsync(async (req, res) => {
+  const { userId, userRole } = getUserContext(req);
   const { investorType, kycStatus, accreditedInvestor } = req.query;
 
-  let filter = { userId };
+  let filter = {};
+
+  // Role-based filtering: Root sees all, Admin sees only their own
+  if (userRole === ROLES.ADMIN) {
+    filter.createdBy = userId;
+  }
+  // Root (role 0) sees all investors, so no userId filter
 
   if (investorType) filter.investorType = investorType;
   if (kycStatus) filter.kycStatus = kycStatus;
@@ -156,17 +160,25 @@ router.get('/', authenticate, catchAsync(async (req, res) => {
 
 /**
  * @route   GET /api/investors/search
- * @desc    Search investors by name or email
- * @access  Private (requires authentication)
+ * @desc    Search investors by name or email (role-based filtering applied)
+ * @access  Private (requires authentication, Root/Admin only)
  */
-router.get('/search', authenticate, catchAsync(async (req, res) => {
-  const userId = req.auth.userId || req.user.id;
+router.get('/search', authenticate, requireInvestmentManagerAccess, catchAsync(async (req, res) => {
+  const { userId, userRole } = getUserContext(req);
   const { q } = req.query;
 
   validate(q, 'Search query is required');
   validate(q.length >= 2, 'Search query must be at least 2 characters');
 
-  const investors = await Investor.search(q, userId);
+  let investors;
+
+  if (userRole === ROLES.ROOT) {
+    // Root can search all investors (pass null as userId)
+    investors = await Investor.search(q, null);
+  } else {
+    // Admin can only search their own investors
+    investors = await Investor.search(q, userId);
+  }
 
   res.status(200).json({
     success: true,
@@ -178,10 +190,10 @@ router.get('/search', authenticate, catchAsync(async (req, res) => {
 /**
  * @route   GET /api/investors/:id
  * @desc    Get a single investor by ID
- * @access  Private (requires authentication)
+ * @access  Private (requires authentication, Root/Admin only)
  */
-router.get('/:id', authenticate, catchAsync(async (req, res) => {
-  const userId = req.auth.userId || req.user.id;
+router.get('/:id', authenticate, requireInvestmentManagerAccess, catchAsync(async (req, res) => {
+  const { userId, userRole } = getUserContext(req);
   const { id } = req.params;
 
   // Validate UUID format
@@ -191,7 +203,11 @@ router.get('/:id', authenticate, catchAsync(async (req, res) => {
   const investor = await Investor.findById(id);
 
   validate(investor, 'Investor not found');
-  validate(investor.userId === userId, 'Unauthorized access to investor');
+
+  // Root can access any investor, Admin can only access their own
+  if (userRole === ROLES.ADMIN) {
+    validate(investor.createdBy === userId, 'Unauthorized access to investor');
+  }
 
   res.status(200).json({
     success: true,
@@ -202,10 +218,10 @@ router.get('/:id', authenticate, catchAsync(async (req, res) => {
 /**
  * @route   GET /api/investors/:id/with-structures
  * @desc    Get investor with all structures
- * @access  Private (requires authentication)
+ * @access  Private (requires authentication, Root/Admin only)
  */
-router.get('/:id/with-structures', authenticate, catchAsync(async (req, res) => {
-  const userId = req.auth.userId || req.user.id;
+router.get('/:id/with-structures', authenticate, requireInvestmentManagerAccess, catchAsync(async (req, res) => {
+  const { userId, userRole } = getUserContext(req);
   const { id } = req.params;
 
   // Validate UUID format
@@ -214,7 +230,11 @@ router.get('/:id/with-structures', authenticate, catchAsync(async (req, res) => 
 
   const investor = await Investor.findById(id);
   validate(investor, 'Investor not found');
-  validate(investor.userId === userId, 'Unauthorized access to investor');
+
+  // Root can access any investor, Admin can only access their own
+  if (userRole === ROLES.ADMIN) {
+    validate(investor.createdBy === userId, 'Unauthorized access to investor');
+  }
 
   const investorWithStructures = await Investor.findWithStructures(id);
 
@@ -227,10 +247,10 @@ router.get('/:id/with-structures', authenticate, catchAsync(async (req, res) => 
 /**
  * @route   GET /api/investors/:id/portfolio
  * @desc    Get investor portfolio summary
- * @access  Private (requires authentication)
+ * @access  Private (requires authentication, Root/Admin only)
  */
-router.get('/:id/portfolio', authenticate, catchAsync(async (req, res) => {
-  const userId = req.auth.userId || req.user.id;
+router.get('/:id/portfolio', authenticate, requireInvestmentManagerAccess, catchAsync(async (req, res) => {
+  const { userId, userRole } = getUserContext(req);
   const { id } = req.params;
 
   // Validate UUID format
@@ -239,7 +259,11 @@ router.get('/:id/portfolio', authenticate, catchAsync(async (req, res) => {
 
   const investor = await Investor.findById(id);
   validate(investor, 'Investor not found');
-  validate(investor.userId === userId, 'Unauthorized access to investor');
+
+  // Root can access any investor, Admin can only access their own
+  if (userRole === ROLES.ADMIN) {
+    validate(investor.createdBy === userId, 'Unauthorized access to investor');
+  }
 
   const portfolio = await Investor.getPortfolioSummary(id);
 
@@ -252,10 +276,10 @@ router.get('/:id/portfolio', authenticate, catchAsync(async (req, res) => {
 /**
  * @route   PUT /api/investors/:id
  * @desc    Update an investor
- * @access  Private (requires authentication)
+ * @access  Private (requires authentication, Root/Admin only)
  */
-router.put('/:id', authenticate, catchAsync(async (req, res) => {
-  const userId = req.auth.userId || req.user.id;
+router.put('/:id', authenticate, requireInvestmentManagerAccess, catchAsync(async (req, res) => {
+  const { userId, userRole } = getUserContext(req);
   const { id } = req.params;
 
   // Validate UUID format
@@ -264,7 +288,11 @@ router.put('/:id', authenticate, catchAsync(async (req, res) => {
 
   const investor = await Investor.findById(id);
   validate(investor, 'Investor not found');
-  validate(investor.userId === userId, 'Unauthorized access to investor');
+
+  // Root can edit any investor, Admin can only edit their own
+  if (userRole === ROLES.ADMIN) {
+    validate(investor.createdBy === userId, 'Unauthorized access to investor');
+  }
 
   // Check if email is being updated
   if (req.body.email && req.body.email !== investor.email) {
@@ -280,9 +308,9 @@ router.put('/:id', authenticate, catchAsync(async (req, res) => {
   const updateData = {};
   const allowedFields = [
     'email', 'phoneNumber', 'country', 'taxId', 'kycStatus', 'accreditedInvestor',
-    'riskTolerance', 'investmentPreferences',
+    'riskTolerance', 'investmentPreferences', 'investorType',
     // Individual fields
-    'firstName', 'lastName', 'dateOfBirth', 'nationality', 'passportNumber',
+    'fullName', 'dateOfBirth', 'nationality', 'passportNumber',
     'addressLine1', 'addressLine2', 'city', 'state', 'postalCode',
     // Institution fields
     'institutionName', 'institutionType', 'registrationNumber', 'legalRepresentative',
@@ -331,7 +359,15 @@ router.put('/:id', authenticate, catchAsync(async (req, res) => {
 
   validate(Object.keys(updateData).length > 0, 'No valid fields provided for update');
 
+  console.log('=== UPDATE DEBUG ===');
+  console.log('Investor ID:', id);
+  console.log('Update Data:', JSON.stringify(updateData, null, 2));
+  console.log('Number of fields to update:', Object.keys(updateData).length);
+
   const updatedInvestor = await Investor.findByIdAndUpdate(id, updateData);
+
+  console.log('Updated Investor:', JSON.stringify(updatedInvestor, null, 2));
+  console.log('===================');
 
   res.status(200).json({
     success: true,
@@ -343,10 +379,10 @@ router.put('/:id', authenticate, catchAsync(async (req, res) => {
 /**
  * @route   DELETE /api/investors/:id
  * @desc    Delete an investor
- * @access  Private (requires authentication)
+ * @access  Private (requires authentication, Root/Admin only)
  */
-router.delete('/:id', authenticate, catchAsync(async (req, res) => {
-  const userId = req.auth.userId || req.user.id;
+router.delete('/:id', authenticate, requireInvestmentManagerAccess, catchAsync(async (req, res) => {
+  const { userId, userRole } = getUserContext(req);
   const { id } = req.params;
 
   // Validate UUID format
@@ -355,7 +391,11 @@ router.delete('/:id', authenticate, catchAsync(async (req, res) => {
 
   const investor = await Investor.findById(id);
   validate(investor, 'Investor not found');
-  validate(investor.userId === userId, 'Unauthorized access to investor');
+
+  // Root can delete any investor, Admin can only delete their own
+  if (userRole === ROLES.ADMIN) {
+    validate(investor.createdBy === userId, 'Unauthorized access to investor');
+  }
 
   await Investor.findByIdAndDelete(id);
 

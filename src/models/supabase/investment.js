@@ -42,7 +42,7 @@ class Investment {
       geography: 'geography',
       currency: 'currency',
       notes: 'notes',
-      userId: 'user_id',
+      createdBy: 'created_by',
       createdAt: 'created_at',
       updatedAt: 'updated_at'
     };
@@ -93,7 +93,7 @@ class Investment {
       geography: dbData.geography,
       currency: dbData.currency,
       notes: dbData.notes,
-      userId: dbData.user_id,
+      createdBy: dbData.created_by,
       createdAt: dbData.created_at,
       updatedAt: dbData.updated_at
     };
@@ -182,7 +182,7 @@ class Investment {
    * Find investments by user ID
    */
   static async findByUserId(userId) {
-    return this.find({ userId });
+    return this.find({ createdBy: userId });
   }
 
   /**

@@ -25,7 +25,7 @@ class CapitalCall {
       notes: 'notes',
       investmentId: 'investment_id',
       sentDate: 'sent_date',
-      userId: 'user_id',
+      createdBy: 'created_by',
       createdAt: 'created_at',
       updatedAt: 'updated_at'
     };
@@ -59,7 +59,7 @@ class CapitalCall {
       notes: dbData.notes,
       investmentId: dbData.investment_id,
       sentDate: dbData.sent_date,
-      userId: dbData.user_id,
+      createdBy: dbData.created_by,
       createdAt: dbData.created_at,
       updatedAt: dbData.updated_at
     };
@@ -143,7 +143,7 @@ class CapitalCall {
    * Find capital calls by user ID
    */
   static async findByUserId(userId) {
-    return this.find({ userId });
+    return this.find({ createdBy: userId });
   }
 
   /**

@@ -8,13 +8,14 @@ const { catchAsync, validate } = require('../middleware/errorHandler');
 const { handleDocumentUpload } = require('../middleware/upload');
 const { uploadToSupabase } = require('../utils/fileUpload');
 const { Document, Structure, Investor, Investment, CapitalCall, Distribution } = require('../models/supabase');
+const { requireInvestmentManagerAccess, getUserContext, ROLES } = require('../middleware/rbac');
 
 const router = express.Router();
 
 /**
- * Validate entity exists and belongs to user
+ * Validate entity exists and belongs to user (with role-based access)
  */
-async function validateEntity(entityType, entityId, userId) {
+async function validateEntity(entityType, entityId, userId, userRole) {
   let entity = null;
 
   switch (entityType) {
@@ -38,7 +39,11 @@ async function validateEntity(entityType, entityId, userId) {
   }
 
   validate(entity, `${entityType} not found`);
-  validate(entity.userId === userId, `Unauthorized access to ${entityType}`);
+
+  // Root can access any entity, Admin can only access their own
+  if (userRole === ROLES.ADMIN) {
+    validate(entity.userId === userId, `Unauthorized access to ${entityType}`);
+  }
 
   return entity;
 }
@@ -132,14 +137,21 @@ router.post('/', authenticate, handleDocumentUpload, catchAsync(async (req, res)
 
 /**
  * @route   GET /api/documents/all
- * @desc    Get all documents from all entities and all users (admin access)
- * @access  Private (requires authentication)
- * @note    This endpoint returns documents across all users - use with caution
+ * @desc    Get all documents with role-based filtering
+ * @access  Private (requires authentication, Root/Admin only)
+ * @note    Root users see all documents, Admin users see only their own
  */
-router.get('/all', authenticate, catchAsync(async (req, res) => {
+router.get('/all', authenticate, requireInvestmentManagerAccess, catchAsync(async (req, res) => {
+  const { userId, userRole } = getUserContext(req);
   const { entityType, documentType, isActive, entityId } = req.query;
 
   let filter = {};
+
+  // Role-based filtering: Root sees all, Admin sees only their own
+  if (userRole === ROLES.ADMIN) {
+    filter.uploadedBy = userId;
+  }
+  // Root (role 0) sees all documents, so no uploadedBy filter
 
   if (entityType) filter.entityType = entityType;
   if (documentType) filter.documentType = documentType;

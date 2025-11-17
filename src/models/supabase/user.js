@@ -2,7 +2,30 @@
 const bcrypt = require('bcrypt');
 const { getSupabase } = require('../../config/database');
 
+// Role constants
+const ROLES = {
+  ROOT: 0,
+  ADMIN: 1,
+  INVESTOR: 2
+};
+
+// Role names for display
+const ROLE_NAMES = {
+  0: 'root',
+  1: 'admin',
+  2: 'investor'
+};
+
 class User {
+  /**
+   * Validate role value
+   * @param {number} role - Role value to validate
+   * @returns {boolean} True if valid role
+   */
+  static isValidRole(role) {
+    return role === 0 || role === 1 || role === 2;
+  }
+
   /**
    * Create a new user
    * @param {Object} userData - User data
@@ -10,6 +33,16 @@ class User {
    */
   static async create(userData) {
     const supabase = getSupabase();
+
+    // Validate role is required
+    if (userData.role === undefined || userData.role === null) {
+      throw new Error('Role is required. Must be 0 (root), 1 (admin), or 2 (investor)');
+    }
+
+    // Validate role value
+    if (!this.isValidRole(userData.role)) {
+      throw new Error('Invalid role. Must be 0 (root), 1 (admin), or 2 (investor)');
+    }
 
     // Hash password before storing
     if (userData.password) {
@@ -25,7 +58,7 @@ class User {
       last_name: userData.lastName || '',
       app_language: userData.appLanguage || 'en',
       profile_image: userData.profileImage || null,
-      role: userData.role || 'user',
+      role: userData.role,
       is_active: userData.isActive !== undefined ? userData.isActive : true,
       is_email_verified: userData.isEmailVerified || false,
       last_login: userData.lastLogin || null,
@@ -151,6 +184,13 @@ class User {
    */
   static async findByIdAndUpdate(id, updateData, options = {}) {
     const supabase = getSupabase();
+
+    // Validate role if being updated
+    if (updateData.role !== undefined && updateData.role !== null) {
+      if (!this.isValidRole(updateData.role)) {
+        throw new Error('Invalid role. Must be 0 (root), 1 (admin), or 2 (investor)');
+      }
+    }
 
     // Hash password if being updated
     if (updateData.password) {
@@ -333,4 +373,7 @@ class User {
   }
 }
 
+// Export User class and role constants
 module.exports = User;
+module.exports.ROLES = ROLES;
+module.exports.ROLE_NAMES = ROLE_NAMES;

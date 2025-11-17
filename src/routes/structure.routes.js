@@ -6,20 +6,22 @@ const express = require('express');
 const { authenticate } = require('../middleware/auth');
 const { catchAsync, validate } = require('../middleware/errorHandler');
 const { Structure } = require('../models/supabase');
+const { requireInvestmentManagerAccess, getUserContext, ROLES } = require('../middleware/rbac');
 
 const router = express.Router();
 
 /**
  * @route   POST /api/structures
  * @desc    Create a new structure
- * @access  Private (requires authentication)
+ * @access  Private (requires authentication, Root/Admin only)
  */
-router.post('/', authenticate, catchAsync(async (req, res) => {
+router.post('/', authenticate, requireInvestmentManagerAccess, catchAsync(async (req, res) => {
   const userId = req.auth.userId || req.user.id;
 
   const {
     name,
     type,
+    status,
     description,
     parentStructureId,
     totalCommitment,
@@ -41,7 +43,8 @@ router.post('/', authenticate, catchAsync(async (req, res) => {
     regulatoryStatus,
     investmentStrategy,
     targetReturns,
-    riskProfile
+    riskProfile,
+    stage
   } = req.body;
 
   // Validate required fields
@@ -57,7 +60,7 @@ router.post('/', authenticate, catchAsync(async (req, res) => {
 
     const parentStructure = await Structure.findById(parentStructureId);
     validate(parentStructure, 'Parent structure not found');
-    validate(parentStructure.userId === userId, 'Parent structure does not belong to user');
+    validate(parentStructure.createdBy === userId, 'Parent structure does not belong to user');
     validate(parentStructure.hierarchyLevel < 5, 'Maximum hierarchy level (5) reached');
   }
 
@@ -66,7 +69,7 @@ router.post('/', authenticate, catchAsync(async (req, res) => {
     name: name.trim(),
     type,
     description: description?.trim() || '',
-    status: 'Active',
+    status: status || 'Active',
     parentStructureId: parentStructureId || null,
     hierarchyLevel: parentStructureId ? null : 1, // Will be calculated by DB trigger
     totalCommitment: totalCommitment || 0,
@@ -92,7 +95,8 @@ router.post('/', authenticate, catchAsync(async (req, res) => {
     investmentStrategy: investmentStrategy?.trim() || '',
     targetReturns: targetReturns?.trim() || '',
     riskProfile: riskProfile?.trim() || '',
-    userId
+    stage: stage?.trim() || '',
+    createdBy: userId
   };
 
   const structure = await Structure.create(structureData);
@@ -106,14 +110,20 @@ router.post('/', authenticate, catchAsync(async (req, res) => {
 
 /**
  * @route   GET /api/structures
- * @desc    Get all structures for authenticated user
- * @access  Private (requires authentication)
+ * @desc    Get all structures (role-based filtering applied)
+ * @access  Private (requires authentication, Root/Admin only)
  */
-router.get('/', authenticate, catchAsync(async (req, res) => {
-  const userId = req.auth.userId || req.user.id;
+router.get('/', authenticate, requireInvestmentManagerAccess, catchAsync(async (req, res) => {
+  const { userId, userRole } = getUserContext(req);
   const { type, status, parentId } = req.query;
 
-  let filter = { userId };
+  let filter = {};
+
+  // Role-based filtering: Root sees all, Admin sees only their own
+  if (userRole === ROLES.ADMIN) {
+    filter.createdBy = userId;
+  }
+  // Root (role 0) sees all structures, so no userId filter
 
   if (type) filter.type = type;
   if (status) filter.status = status;
@@ -130,13 +140,22 @@ router.get('/', authenticate, catchAsync(async (req, res) => {
 
 /**
  * @route   GET /api/structures/root
- * @desc    Get all root structures (no parent) for authenticated user
- * @access  Private (requires authentication)
+ * @desc    Get all root structures (no parent) with role-based filtering
+ * @access  Private (requires authentication, Root/Admin only)
  */
-router.get('/root', authenticate, catchAsync(async (req, res) => {
-  const userId = req.auth.userId || req.user.id;
+router.get('/root', authenticate, requireInvestmentManagerAccess, catchAsync(async (req, res) => {
+  const { userId, userRole } = getUserContext(req);
 
-  const structures = await Structure.findRootStructures(userId);
+  let structures;
+
+  if (userRole === ROLES.ROOT) {
+    // Root sees all root structures
+    const allStructures = await Structure.find({ parentStructureId: null });
+    structures = allStructures;
+  } else {
+    // Admin sees only their root structures
+    structures = await Structure.findRootStructures(userId);
+  }
 
   res.status(200).json({
     success: true,
@@ -148,16 +167,20 @@ router.get('/root', authenticate, catchAsync(async (req, res) => {
 /**
  * @route   GET /api/structures/:id
  * @desc    Get a single structure by ID
- * @access  Private (requires authentication)
+ * @access  Private (requires authentication, Root/Admin only)
  */
-router.get('/:id', authenticate, catchAsync(async (req, res) => {
-  const userId = req.auth.userId || req.user.id;
+router.get('/:id', authenticate, requireInvestmentManagerAccess, catchAsync(async (req, res) => {
+  const { userId, userRole } = getUserContext(req);
   const { id } = req.params;
 
   const structure = await Structure.findById(id);
 
   validate(structure, 'Structure not found');
-  validate(structure.userId === userId, 'Unauthorized access to structure');
+
+  // Root can access any structure, Admin can only access their own
+  if (userRole === ROLES.ADMIN) {
+    validate(structure.createdBy === userId, 'Unauthorized access to structure');
+  }
 
   res.status(200).json({
     success: true,
@@ -168,15 +191,19 @@ router.get('/:id', authenticate, catchAsync(async (req, res) => {
 /**
  * @route   GET /api/structures/:id/children
  * @desc    Get child structures
- * @access  Private (requires authentication)
+ * @access  Private (requires authentication, Root/Admin only)
  */
-router.get('/:id/children', authenticate, catchAsync(async (req, res) => {
-  const userId = req.auth.userId || req.user.id;
+router.get('/:id/children', authenticate, requireInvestmentManagerAccess, catchAsync(async (req, res) => {
+  const { userId, userRole } = getUserContext(req);
   const { id } = req.params;
 
   const structure = await Structure.findById(id);
   validate(structure, 'Structure not found');
-  validate(structure.userId === userId, 'Unauthorized access to structure');
+
+  // Root can access any structure, Admin can only access their own
+  if (userRole === ROLES.ADMIN) {
+    validate(structure.createdBy === userId, 'Unauthorized access to structure');
+  }
 
   const children = await Structure.findChildStructures(id);
 
@@ -190,15 +217,19 @@ router.get('/:id/children', authenticate, catchAsync(async (req, res) => {
 /**
  * @route   GET /api/structures/:id/with-investors
  * @desc    Get structure with all investors
- * @access  Private (requires authentication)
+ * @access  Private (requires authentication, Root/Admin only)
  */
-router.get('/:id/with-investors', authenticate, catchAsync(async (req, res) => {
-  const userId = req.auth.userId || req.user.id;
+router.get('/:id/with-investors', authenticate, requireInvestmentManagerAccess, catchAsync(async (req, res) => {
+  const { userId, userRole } = getUserContext(req);
   const { id } = req.params;
 
   const structure = await Structure.findById(id);
   validate(structure, 'Structure not found');
-  validate(structure.userId === userId, 'Unauthorized access to structure');
+
+  // Root can access any structure, Admin can only access their own
+  if (userRole === ROLES.ADMIN) {
+    validate(structure.createdBy === userId, 'Unauthorized access to structure');
+  }
 
   const structureWithInvestors = await Structure.findWithInvestors(id);
 
@@ -211,15 +242,19 @@ router.get('/:id/with-investors', authenticate, catchAsync(async (req, res) => {
 /**
  * @route   PUT /api/structures/:id
  * @desc    Update a structure
- * @access  Private (requires authentication)
+ * @access  Private (requires authentication, Root/Admin only)
  */
-router.put('/:id', authenticate, catchAsync(async (req, res) => {
-  const userId = req.auth.userId || req.user.id;
+router.put('/:id', authenticate, requireInvestmentManagerAccess, catchAsync(async (req, res) => {
+  const { userId, userRole } = getUserContext(req);
   const { id } = req.params;
 
   const structure = await Structure.findById(id);
   validate(structure, 'Structure not found');
-  validate(structure.userId === userId, 'Unauthorized access to structure');
+
+  // Root can edit any structure, Admin can only edit their own
+  if (userRole === ROLES.ADMIN) {
+    validate(structure.createdBy === userId, 'Unauthorized access to structure');
+  }
 
   const updateData = {};
   const allowedFields = [
@@ -228,7 +263,7 @@ router.put('/:id', authenticate, catchAsync(async (req, res) => {
     'extensionYears', 'finalDate', 'gp', 'fundAdmin', 'legalCounsel',
     'auditor', 'taxAdvisor', 'bankAccounts', 'baseCurrency',
     'taxJurisdiction', 'regulatoryStatus', 'investmentStrategy',
-    'targetReturns', 'riskProfile'
+    'targetReturns', 'riskProfile', 'stage'
   ];
 
   for (const field of allowedFields) {
@@ -251,16 +286,20 @@ router.put('/:id', authenticate, catchAsync(async (req, res) => {
 /**
  * @route   PATCH /api/structures/:id/financials
  * @desc    Update structure financial totals
- * @access  Private (requires authentication)
+ * @access  Private (requires authentication, Root/Admin only)
  */
-router.patch('/:id/financials', authenticate, catchAsync(async (req, res) => {
-  const userId = req.auth.userId || req.user.id;
+router.patch('/:id/financials', authenticate, requireInvestmentManagerAccess, catchAsync(async (req, res) => {
+  const { userId, userRole } = getUserContext(req);
   const { id } = req.params;
   const { totalCalled, totalDistributed, totalInvested } = req.body;
 
   const structure = await Structure.findById(id);
   validate(structure, 'Structure not found');
-  validate(structure.userId === userId, 'Unauthorized access to structure');
+
+  // Root can edit any structure, Admin can only edit their own
+  if (userRole === ROLES.ADMIN) {
+    validate(structure.createdBy === userId, 'Unauthorized access to structure');
+  }
 
   const financials = {};
   if (totalCalled !== undefined) financials.totalCalled = totalCalled;
@@ -281,15 +320,19 @@ router.patch('/:id/financials', authenticate, catchAsync(async (req, res) => {
 /**
  * @route   DELETE /api/structures/:id
  * @desc    Delete a structure
- * @access  Private (requires authentication)
+ * @access  Private (requires authentication, Root/Admin only)
  */
-router.delete('/:id', authenticate, catchAsync(async (req, res) => {
-  const userId = req.auth.userId || req.user.id;
+router.delete('/:id', authenticate, requireInvestmentManagerAccess, catchAsync(async (req, res) => {
+  const { userId, userRole } = getUserContext(req);
   const { id } = req.params;
 
   const structure = await Structure.findById(id);
   validate(structure, 'Structure not found');
-  validate(structure.userId === userId, 'Unauthorized access to structure');
+
+  // Root can delete any structure, Admin can only delete their own
+  if (userRole === ROLES.ADMIN) {
+    validate(structure.createdBy === userId, 'Unauthorized access to structure');
+  }
 
   await Structure.findByIdAndDelete(id);
 
