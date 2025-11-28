@@ -5,11 +5,13 @@
 
 require('dotenv').config();
 const express = require('express');
+const http = require('http');
 const cors = require('cors');
 const helmet = require('helmet');
 const morgan = require('morgan');
 const path = require('path');
 const routes = require('./routes');
+const { initializeSocket } = require('./config/socket');
 const {
   errorHandler,
   notFoundHandler,
@@ -22,7 +24,11 @@ const { connectDB } = require('./config/database');
 
 // Initialize Express app
 const app = express();
+const server = http.createServer(app);
 const PORT = process.env.PORT || 3000;
+
+// Initialize Socket.IO
+initializeSocket(server);
 
 // ===== GLOBAL ERROR HANDLERS =====
 // Setup handlers for unhandled rejections and uncaught exceptions
@@ -260,7 +266,7 @@ const gracefulShutdown = (signal) => {
 };
 
 // ===== START SERVER =====
-const server = app.listen(PORT, async () => {
+server.listen(PORT, async () => {
   
   console.log('\n=================================');
   console.log('🚀 Server Started Successfully!');
@@ -279,6 +285,7 @@ const server = app.listen(PORT, async () => {
   console.log(`   • Company: http://localhost:${PORT}/api/company`);
   console.log(`   • Notifications: http://localhost:${PORT}/api/notifications`);
   console.log(`   • Blockchain: http://localhost:${PORT}/api/blockchain`);
+  console.log(`   • WebSocket: ws://localhost:${PORT} (Socket.IO)`);
   console.log('=================================\n');
   
   await connectDB();

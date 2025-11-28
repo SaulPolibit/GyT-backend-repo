@@ -12,6 +12,7 @@ const {
   NotFoundError,
   AuthorizationError
 } = require('../middleware/errorHandler');
+const { User, DocusealSubmission } = require('../models/supabase');
 
 const router = express.Router();
 
@@ -423,10 +424,145 @@ router.get('/submissions/stats', authenticate, catchAsync(async (req, res) => {
 }));
 
 /**
- * @route   GET /api/docuseal/health
- * @desc    Health check for DocuSeal API routes
- * @access  Public
+ * @route   POST /api/docuseal/webhook
+ * @desc    Handle DocuSeal webhook events
+ * @access  Public (DocuSeal webhook)
+ * @body    Webhook payload from DocuSeal
  */
+router.post('/webhook', catchAsync(async (req, res) => {
+  const { event_type, data } = req.body;
+
+  // Validate webhook payload
+  validate(event_type, 'event_type is required');
+  validate(data, 'data is required');
+
+  // Only process submission.completed events
+  if (event_type === 'submission.completed') {
+    // Extract submission data
+    const submissionId = data.id;
+    const slug = data.slug;
+    const auditLogUrl = data.audit_log_url;
+
+    // Get email from the first submitter
+    const submitters = data.submitters || [];
+    const firstSubmitter = submitters[0];
+
+    if (!firstSubmitter || !firstSubmitter.email) {
+      return res.status(400).json({
+        success: false,
+        message: 'No submitter email found in webhook payload'
+      });
+    }
+
+    const email = firstSubmitter.email;
+
+    // Construct submission URL from slug
+    const submissionURL = `https://docuseal.com/s/${slug}`;
+
+    // Check if submission already exists
+    const existingSubmission = await DocusealSubmission.findBySubmissionId(submissionId);
+
+    if (existingSubmission) {
+      // Update existing submission
+      const updatedSubmission = await DocusealSubmission.findByIdAndUpdate(
+        existingSubmission.id,
+        {
+          submissionURL,
+          auditLogUrl
+        }
+      );
+
+      return res.status(200).json({
+        success: true,
+        message: 'Submission updated successfully',
+        data: updatedSubmission
+      });
+    }
+
+    // Create new submission record
+    const submission = await DocusealSubmission.create({
+      email,
+      submissionId,
+      submissionURL,
+      auditLogUrl
+    });
+
+    return res.status(201).json({
+      success: true,
+      message: 'Submission created successfully',
+      data: submission
+    });
+  }
+
+  // For other event types, just acknowledge receipt
+  res.status(200).json({
+    success: true,
+    message: `Webhook event ${event_type} received`,
+    processed: false
+  });
+}));
+
+/**
+ * @route   GET /api/docuseal/my-submissions
+ * @desc    Get all DocuSeal submissions for the logged-in user
+ * @access  Private (requires authentication)
+ */
+router.get('/my-submissions', authenticate, catchAsync(async (req, res) => {
+  // Get user ID from authenticated token
+  const userId = req.auth.userId || req.user.id;
+
+  // Find the user to get their email
+  const user = await User.findById(userId);
+  if (!user) {
+    return res.status(404).json({
+      success: false,
+      message: 'User not found'
+    });
+  }
+
+  // Get all submissions for this user's email
+  const submissions = await DocusealSubmission.findByEmail(user.email);
+
+  res.status(200).json({
+    success: true,
+    count: submissions.length,
+    data: submissions
+  });
+}));
+
+/**
+ * @route   GET /api/docuseal/verify-submission
+ * @desc    Verify if current user has any docuseal submissions
+ * @access  Private (requires authentication)
+ * @returns {boolean} hasSubmissions - true if user has at least one submission, false otherwise
+ */
+router.get('/verify-submission', authenticate, catchAsync(async (req, res) => {
+  // Get user ID from authenticated token
+  const userId = req.auth.userId || req.user.id;
+
+  // Find the user to get their email
+  const user = await User.findById(userId);
+  if (!user) {
+    return res.status(404).json({
+      success: false,
+      message: 'User not found'
+    });
+  }
+
+  // Get all submissions for this user's email
+  const submissions = await DocusealSubmission.findByEmail(user.email);
+
+  // Return true if user has at least one submission, false otherwise
+  const hasSubmissions = submissions.length > 0;
+
+  res.status(200).json({
+    success: true,
+    hasSubmissions,
+    count: submissions.length,
+    email: user.email
+  });
+}));
+
 router.get('/health', (req, res) => {
   res.json({
     service: 'DocuSeal API',

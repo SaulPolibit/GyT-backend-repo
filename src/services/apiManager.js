@@ -1165,12 +1165,12 @@ async getDiditToken(_context, _variables) {
 }
 
   async createDiditSession(context, variables) {
-    const { token } = variables;
+    const { token, callback, features, vendorData } = variables;
 
     const body = JSON.stringify({
-      callback: 'https://cdmxhomes.polibit.io/marketplace',
-      features: 'OCR + FACE',
-      vendor_data: 'CDMXHomes',
+      callback: callback || process.env.DIDIT_CALLBACK_URL || 'https://cdmxhomes.polibit.io/marketplace',
+      features: features || process.env.DIDIT_FEATURES || 'OCR + FACE',
+      vendor_data: vendorData || process.env.DIDIT_VENDOR_DATA || 'CDMXHomes',
     });
 
     return httpClient.makeApiRequest({
@@ -1227,7 +1227,7 @@ async getDiditToken(_context, _variables) {
 
     return httpClient.makeApiRequest({
       method: 'get',
-      url: 'https://deployerc20contract-owsxmo2jdq-uc.a.run.app',
+      url: process.env.DEPLOY_ERC20_URL || 'https://deployerc20contract-owsxmo2jdq-uc.a.run.app',
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${authToken}`,
@@ -1253,7 +1253,7 @@ async getDiditToken(_context, _variables) {
 
     return httpClient.makeApiRequest({
       method: 'get',
-      url: 'https://deployerc3643contract-owsxmo2jdq-uc.a.run.app',
+      url: process.env.DEPLOY_ERC3643_URL || 'https://deployerc3643contract-owsxmo2jdq-uc.a.run.app',
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${authToken}`,

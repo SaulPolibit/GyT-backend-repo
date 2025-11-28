@@ -215,9 +215,6 @@ class Investor {
     const supabase = getSupabase();
     const dbData = this._toDbFields(updateData);
 
-    console.log('=== MODEL UPDATE DEBUG ===');
-    console.log('DB Data (snake_case):', JSON.stringify(dbData, null, 2));
-
     const { data, error } = await supabase
       .from('investors')
       .update(dbData)
@@ -226,12 +223,8 @@ class Investor {
       .single();
 
     if (error) {
-      console.log('Supabase Error:', error);
       throw new Error(`Error updating investor: ${error.message}`);
     }
-
-    console.log('Supabase Response Data:', JSON.stringify(data, null, 2));
-    console.log('==========================');
 
     return this._toModel(data);
   }

@@ -6,14 +6,16 @@ const { getSupabase } = require('../../config/database');
 const ROLES = {
   ROOT: 0,
   ADMIN: 1,
-  INVESTOR: 2
+  SUPPORT: 2,
+  INVESTOR: 3
 };
 
 // Role names for display
 const ROLE_NAMES = {
   0: 'root',
   1: 'admin',
-  2: 'investor'
+  2: 'support',
+  3: 'investor'
 };
 
 class User {
@@ -23,7 +25,7 @@ class User {
    * @returns {boolean} True if valid role
    */
   static isValidRole(role) {
-    return role === 0 || role === 1 || role === 2;
+    return role === 0 || role === 1 || role === 2 || role === 3;
   }
 
   /**
@@ -36,12 +38,12 @@ class User {
 
     // Validate role is required
     if (userData.role === undefined || userData.role === null) {
-      throw new Error('Role is required. Must be 0 (root), 1 (admin), or 2 (investor)');
+      throw new Error('Role is required. Must be 0 (root), 1 (admin), 2 (support), or 3 (investor)');
     }
 
     // Validate role value
     if (!this.isValidRole(userData.role)) {
-      throw new Error('Invalid role. Must be 0 (root), 1 (admin), or 2 (investor)');
+      throw new Error('Invalid role. Must be 0 (root), 1 (admin), 2 (support), or 3 (investor)');
     }
 
     // Hash password before storing
@@ -66,7 +68,17 @@ class User {
       password_reset_expires: userData.passwordResetExpires || null,
       email_verification_token: userData.emailVerificationToken || null,
       email_verification_expires: userData.emailVerificationExpires || null,
+      kyc_id: userData.kycId || null,
+      kyc_status: userData.kycStatus || null,
+      kyc_url: userData.kycUrl || null,
+      address: userData.address || null,
+      country: userData.country || null,
     };
+
+    // Include ID if provided (for Supabase Auth integration)
+    if (userData.id) {
+      dbData.id = userData.id;
+    }
 
     const { data, error } = await supabase
       .from('users')
@@ -188,7 +200,7 @@ class User {
     // Validate role if being updated
     if (updateData.role !== undefined && updateData.role !== null) {
       if (!this.isValidRole(updateData.role)) {
-        throw new Error('Invalid role. Must be 0 (root), 1 (admin), or 2 (investor)');
+        throw new Error('Invalid role. Must be 0 (root), 1 (admin), 2 (support), or 3 (investor)');
       }
     }
 
@@ -324,6 +336,11 @@ class User {
       passwordResetExpires: dbUser.password_reset_expires,
       emailVerificationToken: dbUser.email_verification_token,
       emailVerificationExpires: dbUser.email_verification_expires,
+      kycId: dbUser.kyc_id,
+      kycStatus: dbUser.kyc_status,
+      kycUrl: dbUser.kyc_url,
+      address: dbUser.address,
+      country: dbUser.country,
       createdAt: dbUser.created_at,
       updatedAt: dbUser.updated_at,
 
@@ -362,6 +379,11 @@ class User {
       passwordResetExpires: 'password_reset_expires',
       emailVerificationToken: 'email_verification_token',
       emailVerificationExpires: 'email_verification_expires',
+      kycId: 'kyc_id',
+      kycStatus: 'kyc_status',
+      kycUrl: 'kyc_url',
+      address: 'address',
+      country: 'country',
     };
 
     Object.entries(modelData).forEach(([key, value]) => {

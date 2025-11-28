@@ -359,15 +359,7 @@ router.put('/:id', authenticate, requireInvestmentManagerAccess, catchAsync(asyn
 
   validate(Object.keys(updateData).length > 0, 'No valid fields provided for update');
 
-  console.log('=== UPDATE DEBUG ===');
-  console.log('Investor ID:', id);
-  console.log('Update Data:', JSON.stringify(updateData, null, 2));
-  console.log('Number of fields to update:', Object.keys(updateData).length);
-
   const updatedInvestor = await Investor.findByIdAndUpdate(id, updateData);
-
-  console.log('Updated Investor:', JSON.stringify(updatedInvestor, null, 2));
-  console.log('===================');
 
   res.status(200).json({
     success: true,
