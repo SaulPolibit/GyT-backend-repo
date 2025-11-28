@@ -1,5 +1,9 @@
 {
   "version": 2,
+  "framework": null,
+  "buildCommand": null,
+  "devCommand": null,
+  "installCommand": "npm install",
   "builds": [
     {
       "src": "api/index.js",
@@ -11,8 +15,5 @@
       "src": "/(.*)",
       "dest": "/api/index.js"
     }
-  ],
-  "env": {
-    "NODE_ENV": "production"
-  }
+  ]
 }
