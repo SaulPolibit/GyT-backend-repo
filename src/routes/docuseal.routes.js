@@ -437,7 +437,8 @@ router.post('/webhook', catchAsync(async (req, res) => {
   if (signature !== expectedSignature) {
     return res.status(401).json({
       success: false,
-      message: 'Invalid signature'
+      message: 'Invalid signature',
+      signature: signature
     });
   }
 
@@ -452,19 +453,15 @@ router.post('/webhook', catchAsync(async (req, res) => {
     // Extract submission data
     const submissionId = data.id;
     const slug = data.slug;
+    const email = data.email;
 
-    // Get email from the first submitter
-    const submitters = data.submitters || [];
-    const firstSubmitter = submitters[0];
-
-    if (!firstSubmitter || !firstSubmitter.email) {
+    // Validate required fields
+    if (!email) {
       return res.status(400).json({
         success: false,
-        message: 'No submitter email found in webhook payload'
+        message: 'No email found in webhook payload'
       });
     }
-
-    const email = firstSubmitter.email;
 
     // Construct submission URL from slug
     const submissionURL = `https://docuseal.com/s/${slug}`;
