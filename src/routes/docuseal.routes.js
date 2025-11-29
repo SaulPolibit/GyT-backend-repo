@@ -430,11 +430,23 @@ router.get('/submissions/stats', authenticate, catchAsync(async (req, res) => {
  * @body    Webhook payload from DocuSeal
  */
 router.post('/webhook', catchAsync(async (req, res) => {
+  // Log incoming webhook request for debugging
+  console.log('[DocuSeal Webhook] Received webhook request');
+  console.log('[DocuSeal Webhook] Headers:', JSON.stringify(req.headers, null, 2));
+  console.log('[DocuSeal Webhook] Body:', JSON.stringify(req.body, null, 2));
+
   // Validate X-PoliBit-Signature header
   const signature = req.headers['x-polibit-signature'];
   const expectedSignature = '2900f56566097c95876078f8ebed731a374a888d7f5a5a518e2e5d9f518775d8';
 
+  console.log('[DocuSeal Webhook] Signature validation:', {
+    received: signature,
+    expected: expectedSignature,
+    isValid: signature === expectedSignature
+  });
+
   if (signature !== expectedSignature) {
+    console.log('[DocuSeal Webhook] Invalid signature - rejecting request');
     return res.status(401).json({
       success: false,
       message: 'Invalid signature',
@@ -444,18 +456,25 @@ router.post('/webhook', catchAsync(async (req, res) => {
 
   const { event_type, data } = req.body;
 
+  console.log('[DocuSeal Webhook] Event type:', event_type);
+
   // Validate webhook payload
   validate(event_type, 'event_type is required');
   validate(data, 'data is required');
 
   // Only process submission.created and form.completed events
   if (event_type === 'submission.created') {
+    console.log('[DocuSeal Webhook] Processing submission.created event');
+
     // Extract submission data from data.submission
     const email = data.email;
     const submission = data.submission;
 
+    console.log('[DocuSeal Webhook] Extracted data:', { email, submission });
+
     // Validate required fields
     if (!email || !submission) {
+      console.log('[DocuSeal Webhook] Validation failed - missing email or submission');
       return res.status(400).json({
         success: false,
         message: 'Missing required fields: email or submission data'
@@ -466,6 +485,8 @@ router.post('/webhook', catchAsync(async (req, res) => {
     const submissionURL = submission.url || data.submission_url;
     const auditLogUrl = submission.audit_log_url || data.audit_log_url;
 
+    console.log('[DocuSeal Webhook] Creating new submission:', { email, submissionId, submissionURL, auditLogUrl });
+
     // Create new submission record with status 'created'
     const newSubmission = await DocusealSubmission.create({
       email,
@@ -475,6 +496,8 @@ router.post('/webhook', catchAsync(async (req, res) => {
       status: 'created'
     });
 
+    console.log('[DocuSeal Webhook] Submission created successfully:', newSubmission);
+
     return res.status(201).json({
       success: true,
       message: 'Submission created successfully',
@@ -483,12 +506,17 @@ router.post('/webhook', catchAsync(async (req, res) => {
   }
 
   if (event_type === 'submission.completed') {
+    console.log('[DocuSeal Webhook] Processing submission.completed event');
+
     // Extract submission data from data.submission
     const email = data.email;
     const submission = data.submission;
 
+    console.log('[DocuSeal Webhook] Extracted data:', { email, submission });
+
     // Validate required fields
     if (!email || !submission) {
+      console.log('[DocuSeal Webhook] Validation failed - missing email or submission');
       return res.status(400).json({
         success: false,
         message: 'Missing required fields: email or submission data'
@@ -498,10 +526,14 @@ router.post('/webhook', catchAsync(async (req, res) => {
     const submissionId = submission.id;
     const status = submission.status || 'completed';
 
+    console.log('[DocuSeal Webhook] Looking for existing submission:', submissionId);
+
     // Find existing submission by submissionId
     const existingSubmission = await DocusealSubmission.findBySubmissionId(submissionId);
 
     if (!existingSubmission) {
+      console.log('[DocuSeal Webhook] No existing submission found - creating new one');
+
       // Create new submission if it doesn't exist
       const newSubmission = await DocusealSubmission.create({
         email,
@@ -509,12 +541,16 @@ router.post('/webhook', catchAsync(async (req, res) => {
         status
       });
 
+      console.log('[DocuSeal Webhook] New submission created:', newSubmission);
+
       return res.status(201).json({
         success: true,
         message: 'Submission created successfully',
         data: newSubmission
       });
     }
+
+    console.log('[DocuSeal Webhook] Updating existing submission:', existingSubmission.id);
 
     // Update existing submission with completed status
     const updatedSubmission = await DocusealSubmission.findByIdAndUpdate(
@@ -524,6 +560,8 @@ router.post('/webhook', catchAsync(async (req, res) => {
       }
     );
 
+    console.log('[DocuSeal Webhook] Submission updated successfully:', updatedSubmission);
+
     return res.status(200).json({
       success: true,
       message: 'Submission updated successfully',
@@ -532,6 +570,8 @@ router.post('/webhook', catchAsync(async (req, res) => {
   }
 
   // For other event types, just acknowledge receipt
+  console.log('[DocuSeal Webhook] Unhandled event type:', event_type);
+
   res.status(200).json({
     success: true,
     message: `Webhook event ${event_type} received`,
