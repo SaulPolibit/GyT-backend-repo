@@ -482,7 +482,7 @@ router.post('/webhook', catchAsync(async (req, res) => {
     });
   }
 
-  if (event_type === 'form.completed') {
+  if (event_type === 'submission.completed') {
     // Extract submission data from data.submission
     const email = data.email;
     const submission = data.submission;
@@ -496,8 +496,6 @@ router.post('/webhook', catchAsync(async (req, res) => {
     }
 
     const submissionId = submission.id;
-    const submissionURL = submission.url || data.submission_url;
-    const auditLogUrl = submission.audit_log_url || data.audit_log_url;
     const status = submission.status || 'completed';
 
     // Find existing submission by submissionId
@@ -508,8 +506,6 @@ router.post('/webhook', catchAsync(async (req, res) => {
       const newSubmission = await DocusealSubmission.create({
         email,
         submissionId,
-        submissionURL,
-        auditLogUrl,
         status
       });
 
@@ -524,9 +520,7 @@ router.post('/webhook', catchAsync(async (req, res) => {
     const updatedSubmission = await DocusealSubmission.findByIdAndUpdate(
       existingSubmission.id,
       {
-        status,
-        submissionURL,
-        auditLogUrl
+        status
       }
     );
 
