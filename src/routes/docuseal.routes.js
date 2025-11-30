@@ -610,6 +610,54 @@ router.post('/webhook', catchAsync(async (req, res) => {
 }));
 
 /**
+ * @route   GET /api/docuseal/verifyUserSignature
+ * @desc    Verify if the logged-in user has recent DocuSeal submissions (within last 30 minutes)
+ * @access  Private (requires authentication)
+ * @returns {boolean} validation - true if user has recent submissions, false otherwise
+ */
+router.get('/verifyUserSignature', authenticate, catchAsync(async (req, res) => {
+  // Get user ID from authenticated token
+  const userId = req.auth.userId || req.user.id;
+
+  // Find the user to get their email
+  const user = await User.findById(userId);
+  if (!user) {
+    return res.status(404).json({
+      success: false,
+      message: 'User not found'
+    });
+  }
+
+  // Calculate timestamp for 30 minutes ago
+  const thirtyMinutesAgo = new Date(Date.now() - 30 * 60 * 1000);
+
+  // Get all submissions for this user's email
+  const allSubmissions = await DocusealSubmission.findByEmail(user.email);
+
+  // Filter submissions updated within the last 30 minutes
+  const recentSubmissions = allSubmissions.filter(submission => {
+    const updatedAt = new Date(submission.updatedAt);
+    return updatedAt >= thirtyMinutesAgo;
+  });
+
+  const hasRecentSignature = recentSubmissions.length > 0;
+
+  res.status(200).json({
+    success: true,
+    validation: hasRecentSignature,
+    passed: hasRecentSignature,
+    count: recentSubmissions.length,
+    email: user.email,
+    recentSubmissions: recentSubmissions.map(sub => ({
+      id: sub.id,
+      submissionId: sub.submissionId,
+      status: sub.status,
+      updatedAt: sub.updatedAt
+    }))
+  });
+}));
+
+/**
  * @route   GET /api/docuseal/my-submissions
  * @desc    Get all DocuSeal submissions for the logged-in user
  * @access  Private (requires authentication)
