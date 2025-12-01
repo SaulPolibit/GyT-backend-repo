@@ -648,7 +648,7 @@ router.get('/verifyUserSignature', authenticate, catchAsync(async (req, res) => 
   })));
 
   // Extract unique submission IDs that are already used in payments
-  // Convert to strings for consistent comparison and use Set to get unique values
+  // Note: payments.submission_id stores the Supabase UUID (docuseal_submissions.id), not the DocuSeal submission ID
   const usedSubmissionIds = new Set(
     userPayments
       .map(payment => String(payment.submissionId))
@@ -658,11 +658,11 @@ router.get('/verifyUserSignature', authenticate, catchAsync(async (req, res) => 
   console.log('[verifyUserSignature] Used submission IDs Set:', Array.from(usedSubmissionIds));
 
   // Find submissions that are NOT already used in payments
-  // Convert both sides to strings for comparison
+  // Compare payment.submissionId with submission.id (both are Supabase UUIDs)
   const freeSubmissions = userSubmissions.filter(submission => {
-    const submissionIdStr = String(submission.submissionId);
+    const submissionIdStr = String(submission.id); // Use submission.id instead of submission.submissionId
     const isUsed = usedSubmissionIds.has(submissionIdStr);
-    console.log(`[verifyUserSignature] Checking submission ${submissionIdStr}: isUsed=${isUsed}`);
+    console.log(`[verifyUserSignature] Checking submission ID ${submissionIdStr} (DocuSeal ID: ${submission.submissionId}): isUsed=${isUsed}`);
     return !isUsed;
   });
 
