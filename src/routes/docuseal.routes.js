@@ -634,13 +634,20 @@ router.get('/verifyUserSignature', authenticate, catchAsync(async (req, res) => 
   // Get all payments for this user's email
   const userPayments = await Payment.findByEmail(user.email);
 
-  // Extract submission IDs that are already used in payments
-  const usedSubmissionIds = userPayments.map(payment => payment.submissionId);
+  // Extract unique submission IDs that are already used in payments
+  // Convert to strings for consistent comparison and use Set to get unique values
+  const usedSubmissionIds = new Set(
+    userPayments
+      .map(payment => String(payment.submissionId))
+      .filter(id => id && id !== 'null' && id !== 'undefined')
+  );
 
   // Find submissions that are NOT already used in payments
-  const freeSubmissions = userSubmissions.filter(submission =>
-    !usedSubmissionIds.includes(submission.submissionId)
-  );
+  // Convert both sides to strings for comparison
+  const freeSubmissions = userSubmissions.filter(submission => {
+    const submissionIdStr = String(submission.submissionId);
+    return !usedSubmissionIds.has(submissionIdStr);
+  });
 
   const hasFreeSubmission = freeSubmissions.length > 0;
 
@@ -650,7 +657,7 @@ router.get('/verifyUserSignature', authenticate, catchAsync(async (req, res) => 
     passed: hasFreeSubmission,
     email: user.email,
     totalSubmissions: userSubmissions.length,
-    usedSubmissions: usedSubmissionIds.length,
+    usedSubmissions: usedSubmissionIds.size,
     freeSubmissions: freeSubmissions.length,
     availableSubmissions: freeSubmissions.map(sub => ({
       id: sub.id,
