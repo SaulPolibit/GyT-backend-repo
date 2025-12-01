@@ -37,6 +37,7 @@ const DocusealSubmission = require('./docusealSubmission');
 
 // Payment System models
 const Payment = require('./payment');
+const Subscription = require('./subscription');
 
 module.exports = {
   // Core models
@@ -75,4 +76,5 @@ module.exports = {
 
   // Payment System models
   Payment,
+  Subscription,
 };

@@ -29,6 +29,9 @@ const emailRoutes = require('./email.routes');
 // Payment routes
 const paymentRoutes = require('./payment.routes');
 
+// Subscription routes
+const subscriptionRoutes = require('./subscription.routes');
+
 const router = express.Router();
 
 // Mount route modules
@@ -63,6 +66,9 @@ router.use('/users', emailRoutes); // For /api/users/:userId/email-* routes
 // Mount Payment routes
 router.use('/payments', paymentRoutes);
 
+// Mount Subscription routes
+router.use('/subscriptions', subscriptionRoutes);
+
 // Root API endpoint
 router.get('/', (_req, res) => {
   res.json({
@@ -96,6 +102,8 @@ router.get('/', (_req, res) => {
       emailLogs: '/api/users/:userId/email-logs',
       // Payment endpoints
       payments: '/api/payments',
+      // Subscription endpoints
+      subscriptions: '/api/subscriptions',
     },
   });
 });

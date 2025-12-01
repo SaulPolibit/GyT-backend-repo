@@ -138,6 +138,29 @@ CREATE INDEX IF NOT EXISTS idx_projects_paused ON projects(paused);
 CREATE INDEX IF NOT EXISTS idx_projects_available_paused ON projects(available, paused);
 
 -- =============================================
+-- SUBSCRIPTIONS TABLE
+-- =============================================
+CREATE TABLE IF NOT EXISTS subscriptions (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  structure_id VARCHAR(255) NOT NULL,
+  user_id VARCHAR(255) NOT NULL,
+  fund_id VARCHAR(255) NOT NULL,
+  requested_amount VARCHAR(255) NOT NULL,
+  currency VARCHAR(10) NOT NULL,
+  status VARCHAR(50) NOT NULL DEFAULT 'pending',
+  payment_id VARCHAR(255),
+  created_at TIMESTAMP DEFAULT NOW(),
+  updated_at TIMESTAMP DEFAULT NOW()
+);
+
+-- Create indexes for faster lookups
+CREATE INDEX IF NOT EXISTS idx_subscriptions_structure_id ON subscriptions(structure_id);
+CREATE INDEX IF NOT EXISTS idx_subscriptions_user_id ON subscriptions(user_id);
+CREATE INDEX IF NOT EXISTS idx_subscriptions_fund_id ON subscriptions(fund_id);
+CREATE INDEX IF NOT EXISTS idx_subscriptions_payment_id ON subscriptions(payment_id);
+CREATE INDEX IF NOT EXISTS idx_subscriptions_status ON subscriptions(status);
+
+-- =============================================
 -- TRIGGERS FOR UPDATED_AT
 -- =============================================
 -- Create a function to automatically update updated_at timestamp
@@ -163,6 +186,9 @@ CREATE TRIGGER update_smart_contracts_updated_at BEFORE UPDATE ON smart_contract
   FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
 CREATE TRIGGER update_projects_updated_at BEFORE UPDATE ON projects
+  FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+CREATE TRIGGER update_subscriptions_updated_at BEFORE UPDATE ON subscriptions
   FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
 -- =============================================
