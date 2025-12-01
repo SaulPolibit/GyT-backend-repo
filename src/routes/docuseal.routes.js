@@ -634,6 +634,19 @@ router.get('/verifyUserSignature', authenticate, catchAsync(async (req, res) => 
   // Get all payments for this user's email
   const userPayments = await Payment.findByEmail(user.email);
 
+  // Debug logging
+  console.log('[verifyUserSignature] User email:', user.email);
+  console.log('[verifyUserSignature] Total payments found:', userPayments.length);
+  console.log('[verifyUserSignature] Payment submission IDs:', userPayments.map(p => ({
+    submissionId: p.submissionId,
+    type: typeof p.submissionId
+  })));
+  console.log('[verifyUserSignature] DocuSeal submissions:', userSubmissions.map(s => ({
+    id: s.id,
+    submissionId: s.submissionId,
+    type: typeof s.submissionId
+  })));
+
   // Extract unique submission IDs that are already used in payments
   // Convert to strings for consistent comparison and use Set to get unique values
   const usedSubmissionIds = new Set(
@@ -642,11 +655,15 @@ router.get('/verifyUserSignature', authenticate, catchAsync(async (req, res) => 
       .filter(id => id && id !== 'null' && id !== 'undefined')
   );
 
+  console.log('[verifyUserSignature] Used submission IDs Set:', Array.from(usedSubmissionIds));
+
   // Find submissions that are NOT already used in payments
   // Convert both sides to strings for comparison
   const freeSubmissions = userSubmissions.filter(submission => {
     const submissionIdStr = String(submission.submissionId);
-    return !usedSubmissionIds.has(submissionIdStr);
+    const isUsed = usedSubmissionIds.has(submissionIdStr);
+    console.log(`[verifyUserSignature] Checking submission ${submissionIdStr}: isUsed=${isUsed}`);
+    return !isUsed;
   });
 
   const hasFreeSubmission = freeSubmissions.length > 0;
