@@ -237,6 +237,9 @@ class NotificationSettings {
       marketingEmailNotifications: dbSettings.marketing_email_notifications,
       pushNotifications: dbSettings.push_notifications,
       smsNotifications: dbSettings.sms_notifications,
+      notificationFrequency: dbSettings.notification_frequency,
+      preferredContactMethod: dbSettings.preferred_contact_method,
+      reportDeliveryFormat: dbSettings.report_delivery_format,
       createdAt: dbSettings.created_at,
       updatedAt: dbSettings.updated_at,
 
@@ -296,6 +299,9 @@ class NotificationSettings {
       marketingEmailNotifications: 'marketing_email_notifications',
       pushNotifications: 'push_notifications',
       smsNotifications: 'sms_notifications',
+      notificationFrequency: 'notification_frequency',
+      preferredContactMethod: 'preferred_contact_method',
+      reportDeliveryFormat: 'report_delivery_format',
     };
 
     Object.entries(modelData).forEach(([key, value]) => {
