@@ -319,6 +319,90 @@ router.get('/:id/commitments', authenticate, catchAsync(async (req, res) => {
 }));
 
 /**
+ * @route   PUT /api/investors/me
+ * @desc    Update authenticated investor's own profile
+ * @access  Private (requires authentication, Investor role)
+ */
+router.put('/me', authenticate, catchAsync(async (req, res) => {
+  const userId = req.auth?.userId || req.user?.id;
+  const userRole = req.auth?.role ?? req.user?.role;
+
+  // Verify user is an investor
+  validate(userRole === ROLES.INVESTOR, 'This endpoint is only accessible to investors');
+
+  const user = await User.findById(userId);
+  validate(user, 'Investor not found');
+
+  // Check if email is being updated
+  if (req.body.email && req.body.email !== user.email) {
+    // Validate email format
+    const emailRegex = /^\S+@\S+\.\S+$/;
+    validate(emailRegex.test(req.body.email), 'Invalid email format');
+
+    // Check if email is already used by another user
+    const existingUser = await User.findByEmail(req.body.email);
+    validate(!existingUser || existingUser.id === userId, 'Email already in use by another user');
+  }
+
+  const updateData = {};
+  // Investors cannot update admin-only fields
+  const allowedFields = [
+    'email', 'phoneNumber', 'country', 'taxId',
+    'riskTolerance', 'investmentPreferences',
+    // Individual fields
+    'fullName', 'dateOfBirth', 'nationality', 'passportNumber',
+    'addressLine1', 'addressLine2', 'city', 'state', 'postalCode',
+    // Institution fields
+    'institutionName', 'institutionType', 'registrationNumber', 'legalRepresentative',
+    // Fund of Funds fields
+    'fundName', 'fundManager', 'aum',
+    // Family Office fields
+    'officeName', 'familyName', 'principalContact', 'assetsUnderManagement'
+  ];
+
+  // Define field types for proper handling
+  const numberFields = ['aum', 'assetsUnderManagement'];
+  const jsonFields = ['investmentPreferences'];
+
+  for (const field of allowedFields) {
+    if (req.body[field] !== undefined) {
+      const value = req.body[field];
+
+      // Convert empty strings to null for number fields
+      if (numberFields.includes(field) && value === '') {
+        updateData[field] = null;
+        continue;
+      }
+
+      // Convert empty strings to null for JSON fields
+      if (jsonFields.includes(field) && value === '') {
+        updateData[field] = null;
+        continue;
+      }
+
+      // Normalize email to lowercase
+      if (field === 'email' && typeof value === 'string') {
+        updateData[field] = value.toLowerCase();
+        continue;
+      }
+
+      // For string fields, keep as-is (including empty strings)
+      updateData[field] = value;
+    }
+  }
+
+  validate(Object.keys(updateData).length > 0, 'No valid fields provided for update');
+
+  const updatedUser = await User.findByIdAndUpdate(userId, updateData);
+
+  res.status(200).json({
+    success: true,
+    message: 'Profile updated successfully',
+    data: updatedUser
+  });
+}));
+
+/**
  * @route   GET /api/investors/me/capital-calls-summary
  * @desc    Get authenticated user's capital calls summary (Total Called, Total Paid, Outstanding, Total Calls)
  * @access  Private (requires authentication, Investor role)
@@ -460,10 +544,12 @@ router.get('/:id/capital-calls', authenticate, catchAsync(async (req, res) => {
 /**
  * @route   PUT /api/investors/:id
  * @desc    Update an investor
- * @access  Private (requires authentication, Root/Admin only)
+ * @access  Private (requires authentication, Root/Admin/Own investor)
  */
-router.put('/:id', authenticate, requireInvestmentManagerAccess, catchAsync(async (req, res) => {
+router.put('/:id', authenticate, catchAsync(async (req, res) => {
   const { id } = req.params;
+  const requestingUserId = req.auth?.userId || req.user?.id;
+  const requestingUserRole = req.auth?.role ?? req.user?.role;
 
   // Validate UUID format
   const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -472,6 +558,16 @@ router.put('/:id', authenticate, requireInvestmentManagerAccess, catchAsync(asyn
   const user = await User.findById(id);
   validate(user, 'Investor not found');
   validate(user.role === ROLES.INVESTOR, 'User is not an investor');
+
+  // Check access: Root/Admin can update any, Investors can only update their own
+  const hasAccess =
+    requestingUserRole === ROLES.ROOT ||
+    requestingUserRole === ROLES.ADMIN ||
+    (requestingUserRole === ROLES.INVESTOR && requestingUserId === id);
+
+  validate(hasAccess, 'Unauthorized access to investor data');
+
+  const isAdmin = requestingUserRole === ROLES.ROOT || requestingUserRole === ROLES.ADMIN;
 
   // Check if email is being updated
   if (req.body.email && req.body.email !== user.email) {
@@ -483,6 +579,9 @@ router.put('/:id', authenticate, requireInvestmentManagerAccess, catchAsync(asyn
     const existingUser = await User.findByEmail(req.body.email);
     validate(!existingUser || existingUser.id === id, 'Email already in use by another user');
   }
+
+  // Fields that only admins can update
+  const adminOnlyFields = ['kycStatus', 'accreditedInvestor', 'investorType'];
 
   const updateData = {};
   const allowedFields = [
@@ -506,6 +605,11 @@ router.put('/:id', authenticate, requireInvestmentManagerAccess, catchAsync(asyn
 
   for (const field of allowedFields) {
     if (req.body[field] !== undefined) {
+      // Skip admin-only fields if requester is not admin
+      if (!isAdmin && adminOnlyFields.includes(field)) {
+        continue;
+      }
+
       const value = req.body[field];
 
       // Skip empty strings for boolean fields
