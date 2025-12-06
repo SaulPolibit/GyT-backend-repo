@@ -758,7 +758,7 @@ router.get('/me/dashboard', authenticate, catchAsync(async (req, res) => {
         type,
         status,
         base_currency,
-        current_nav
+        total_invested
       )
     `)
     .eq('user_id', userId);
@@ -817,10 +817,9 @@ router.get('/me/dashboard', authenticate, catchAsync(async (req, res) => {
         0
       );
 
-      // Use structure's current_nav or calculate based on called capital
-      // For now, we'll use a simple calculation: called capital + some growth
-      // In production, this should come from the structure's NAV
-      const currentValue = parseFloat(si.structure.current_nav) || calledCapital;
+      // Use structure's total_invested as current value
+      // This represents the total amount invested in the structure
+      const currentValue = parseFloat(si.structure.total_invested) || calledCapital;
 
       // Calculate unrealized gain
       const unrealizedGain = currentValue - calledCapital;
