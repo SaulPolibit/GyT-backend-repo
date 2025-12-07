@@ -98,6 +98,7 @@ router.post('/login', catchAsync(async (req, res) => {
       email: user.email,
       firstName: user.firstName,
       lastName: user.lastName,
+      phoneNumber: user.phoneNumber,
       appLanguage: user.appLanguage,
       profileImage: getFullImageUrl(user.profileImage, req),
       role: user.role,
