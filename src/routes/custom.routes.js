@@ -606,7 +606,65 @@ router.post('/register', authenticate, catchAsync(async (req, res) => {
   });
 }));
 
-// ===== UPDATE USER ENDPOINT =====
+// ===== USER PROFILE ENDPOINTS =====
+
+/**
+ * @route   GET /api/custom/user/profile
+ * @desc    Get user profile information for update profile page
+ * @access  Private (requires authentication)
+ *
+ * @success {200} Success Response
+ * {
+ *   "success": true,
+ *   "user": {
+ *     "id": "user-uuid",
+ *     "profileImage": "https://storage.url/profile.jpg",
+ *     "firstName": "John",
+ *     "lastName": "Doe",
+ *     "email": "john@example.com",
+ *     "phoneNumber": "+1234567890",
+ *     "appLanguage": "en"
+ *   }
+ * }
+ *
+ * @error {401} Unauthorized - No authentication token
+ * {
+ *   "success": false,
+ *   "message": "Authentication required"
+ * }
+ *
+ * @error {404} Not Found - User not found
+ * {
+ *   "success": false,
+ *   "message": "User not found"
+ * }
+ */
+router.get('/user/profile', authenticate, catchAsync(async (req, res) => {
+  // Get user ID from authenticated token
+  const userId = req.auth.userId || req.user.id;
+
+  // Find the user
+  const user = await User.findById(userId);
+  if (!user) {
+    return res.status(404).json({
+      success: false,
+      message: 'User not found'
+    });
+  }
+
+  res.status(200).json({
+    success: true,
+    user: {
+      id: user.id,
+      profileImage: getFullImageUrl(user.profileImage, req),
+      firstName: user.firstName || '',
+      lastName: user.lastName || '',
+      email: user.email || '',
+      phoneNumber: user.phoneNumber || '',
+      appLanguage: user.appLanguage || 'en'
+    }
+  });
+}));
 
 /**
  * @route   PUT /api/custom/user/profile
