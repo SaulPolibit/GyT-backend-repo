@@ -683,11 +683,12 @@ router.get('/user/profile', authenticate, catchAsync(async (req, res) => {
  *            kycStatus?: string,
  *            kycUrl?: string,
  *            address?: string,
- *            country?: string
+ *            country?: string,
+ *            phoneNumber?: string
  *          }
  */
 router.put('/user/profile', authenticate, catchAsync(async (req, res) => {
-  const { firstName, lastName, email, appLanguage, newPassword, oldPassword, role, kycId, kycStatus, kycUrl, address, country } = req.body;
+  const { firstName, lastName, email, appLanguage, newPassword, oldPassword, role, kycId, kycStatus, kycUrl, address, country, phoneNumber } = req.body;
 
   // Get user ID from authenticated token
   const userId = req.auth.userId || req.user.id;
@@ -791,6 +792,9 @@ router.put('/user/profile', authenticate, catchAsync(async (req, res) => {
 
   if (country !== undefined && country !== null && country !== '') {
     updateData.country = country;
+  }
+  if (phoneNumber !== undefined && phoneNumber !== null && phoneNumber !== '') {
+    updateData.phoneNumber = phoneNumber;
   }
 
   // Update user in database
