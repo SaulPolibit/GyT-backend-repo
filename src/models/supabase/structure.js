@@ -136,6 +136,25 @@ class Structure {
   }
 
   /**
+   * Get actual investor count for a structure
+   */
+  static async getInvestorCount(structureId) {
+    const supabase = getSupabase();
+
+    const { count, error } = await supabase
+      .from('structure_investors')
+      .select('*', { count: 'exact', head: true })
+      .eq('structure_id', structureId);
+
+    if (error) {
+      console.error(`Error counting investors: ${error.message}`);
+      return 0;
+    }
+
+    return count || 0;
+  }
+
+  /**
    * Find structure by ID
    */
   static async findById(id) {
@@ -152,7 +171,12 @@ class Structure {
       throw new Error(`Error finding structure: ${error.message}`);
     }
 
-    return this._toModel(data);
+    const structure = this._toModel(data);
+
+    // Get actual investor count
+    structure.investors = await this.getInvestorCount(id);
+
+    return structure;
   }
 
   /**
@@ -177,7 +201,16 @@ class Structure {
       throw new Error(`Error finding structures: ${error.message}`);
     }
 
-    return data.map(item => this._toModel(item));
+    // Get actual investor counts for all structures
+    const structures = await Promise.all(
+      data.map(async (item) => {
+        const structure = this._toModel(item);
+        structure.investors = await this.getInvestorCount(item.id);
+        return structure;
+      })
+    );
+
+    return structures;
   }
 
   /**
@@ -209,7 +242,16 @@ class Structure {
       throw new Error(`Error fetching structure tree: ${error.message}`);
     }
 
-    return data.map(item => this._toModel(item));
+    // Get actual investor counts for all structures
+    const structures = await Promise.all(
+      data.map(async (item) => {
+        const structure = this._toModel(item);
+        structure.investors = await this.getInvestorCount(item.id);
+        return structure;
+      })
+    );
+
+    return structures;
   }
 
   /**
@@ -229,7 +271,16 @@ class Structure {
       throw new Error(`Error finding root structures: ${error.message}`);
     }
 
-    return data.map(item => this._toModel(item));
+    // Get actual investor counts for all structures
+    const structures = await Promise.all(
+      data.map(async (item) => {
+        const structure = this._toModel(item);
+        structure.investors = await this.getInvestorCount(item.id);
+        return structure;
+      })
+    );
+
+    return structures;
   }
 
   /**
@@ -250,7 +301,12 @@ class Structure {
       throw new Error(`Error updating structure: ${error.message}`);
     }
 
-    return this._toModel(data);
+    const structure = this._toModel(data);
+
+    // Get actual investor count
+    structure.investors = await this.getInvestorCount(id);
+
+    return structure;
   }
 
   /**
@@ -295,7 +351,12 @@ class Structure {
       throw new Error(`Error finding structure with investors: ${error.message}`);
     }
 
-    return this._toModel(data);
+    const structure = this._toModel(data);
+
+    // Count investors from the joined data
+    structure.investors = data.structure_investors?.length || 0;
+
+    return structure;
   }
 
   /**
