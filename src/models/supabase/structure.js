@@ -144,7 +144,7 @@ class Structure {
     // Get all investments for this structure
     const { data, error } = await supabase
       .from('investments')
-      .select('user_id')
+      .select('*')
       .eq('structure_id', structureId);
 
     if (error) {
@@ -152,8 +152,10 @@ class Structure {
       return 0;
     }
 
-    // Count unique user IDs (investors)
-    const uniqueInvestors = new Set(data.map(inv => inv.user_id).filter(id => id !== null));
+    // Count unique user IDs (investors) - support both old and new column names
+    const uniqueInvestors = new Set(
+      data.map(inv => inv.user_id || inv.created_by).filter(id => id !== null)
+    );
     return uniqueInvestors.size;
   }
 
@@ -338,31 +340,39 @@ class Structure {
   static async findWithInvestors(structureId) {
     const supabase = getSupabase();
 
-    const { data, error } = await supabase
+    // Get structure
+    const { data: structureData, error: structureError } = await supabase
       .from('structures')
-      .select(`
-        *,
-        investments (
-          *,
-          user:users!investments_user_id_fkey (*)
-        )
-      `)
+      .select('*')
       .eq('id', structureId)
       .single();
 
-    if (error) {
-      throw new Error(`Error finding structure with investors: ${error.message}`);
+    if (structureError) {
+      throw new Error(`Error finding structure: ${structureError.message}`);
     }
 
-    const structure = this._toModel(data);
+    // Get investments for this structure
+    const { data: investments, error: investmentsError } = await supabase
+      .from('investments')
+      .select('*')
+      .eq('structure_id', structureId);
+
+    if (investmentsError) {
+      throw new Error(`Error finding investments: ${investmentsError.message}`);
+    }
+
+    const structure = this._toModel(structureData);
 
     // Count unique investors from investments
     const uniqueInvestors = new Set(
-      data.investments
-        ?.map(inv => inv.user_id)
+      investments
+        ?.map(inv => inv.user_id || inv.created_by) // Support both old and new column names
         .filter(id => id !== null) || []
     );
     structure.investors = uniqueInvestors.size;
+
+    // Attach investments data
+    structure.investments = investments;
 
     return structure;
   }
