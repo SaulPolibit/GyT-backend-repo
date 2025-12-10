@@ -44,6 +44,11 @@ const verifyApiKey = (apiKey) => {
  * Requires valid Bearer token or API key
  */
 const authenticate = (req, res, next) => {
+  // Skip authentication for OPTIONS requests (CORS preflight)
+  if (req.method === 'OPTIONS') {
+    return next();
+  }
+
   const authHeader = req.headers.authorization;
   const apiKey = req.headers['x-api-key'];
 
@@ -231,6 +236,11 @@ const rateLimit = (options = {}) => {
  * Requires valid x-api-key header (does not accept Bearer token)
  */
 const requireApiKey = (req, res, next) => {
+  // Skip authentication for OPTIONS requests (CORS preflight)
+  if (req.method === 'OPTIONS') {
+    return next();
+  }
+
   const apiKey = req.headers['x-api-key'];
 
   // Check if API key is provided
@@ -262,6 +272,11 @@ const requireApiKey = (req, res, next) => {
  * Requires valid Bearer token (does not accept x-api-key)
  */
 const requireBearerToken = (req, res, next) => {
+  // Skip authentication for OPTIONS requests (CORS preflight)
+  if (req.method === 'OPTIONS') {
+    return next();
+  }
+
   const authHeader = req.headers.authorization;
 
   // Check if authorization header is provided

@@ -23,6 +23,11 @@ const ROLES = {
  * Allows Root (0), Admin (1), and Support (2)
  */
 const requireInvestmentManagerAccess = (req, res, next) => {
+  // Skip for OPTIONS requests (CORS preflight)
+  if (req.method === 'OPTIONS') {
+    return next();
+  }
+
   const userRole = req.user?.role ?? req.auth?.role;
 
   // Block investors from accessing investment manager endpoints
@@ -40,6 +45,11 @@ const requireInvestmentManagerAccess = (req, res, next) => {
  * Middleware to require root access only
  */
 const requireRootAccess = (req, res, next) => {
+  // Skip for OPTIONS requests (CORS preflight)
+  if (req.method === 'OPTIONS') {
+    return next();
+  }
+
   const userRole = req.user?.role ?? req.auth?.role;
 
   if (userRole !== ROLES.ROOT) {
