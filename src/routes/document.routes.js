@@ -95,11 +95,33 @@ router.post('/', authenticate, handleDocumentUpload, catchAsync(async (req, res)
   let parsedMetadata = {};
 
   if (tags) {
-    parsedTags = typeof tags === 'string' ? JSON.parse(tags) : tags;
+    if (typeof tags === 'string') {
+      try {
+        // Try to parse as JSON first (e.g., '["tag1", "tag2"]')
+        parsedTags = JSON.parse(tags);
+      } catch (e) {
+        // If not valid JSON, treat as comma-separated string or single tag
+        parsedTags = tags.includes(',')
+          ? tags.split(',').map(t => t.trim())
+          : [tags.trim()];
+      }
+    } else {
+      parsedTags = tags;
+    }
   }
 
   if (metadata) {
-    parsedMetadata = typeof metadata === 'string' ? JSON.parse(metadata) : metadata;
+    if (typeof metadata === 'string') {
+      try {
+        // Try to parse as JSON first (e.g., '{"key": "value"}')
+        parsedMetadata = JSON.parse(metadata);
+      } catch (e) {
+        // If not valid JSON, wrap plain string in object
+        parsedMetadata = { note: metadata.trim() };
+      }
+    } else {
+      parsedMetadata = metadata;
+    }
   }
 
   // Create document
