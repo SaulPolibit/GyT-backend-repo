@@ -76,12 +76,25 @@ router.post('/', authenticate, requireInvestmentManagerAccess, catchAsync(async 
   // Validate type-specific fields
   if (investmentType === 'EQUITY' || investmentType === 'MIXED') {
     validate(equityInvested !== undefined && equityInvested > 0, 'Equity invested amount is required');
+
+    // Validate ownership percentage (if provided)
+    const ownershipPct = ownershipPercentage || equityOwnershipPercent;
+    if (ownershipPct !== undefined && ownershipPct !== null) {
+      validate(ownershipPct >= 0 && ownershipPct <= 100, 'Ownership percentage must be between 0 and 100');
+    }
   }
 
   if (investmentType === 'DEBT' || investmentType === 'MIXED') {
     validate(principalProvided !== undefined && principalProvided > 0, 'Principal provided amount is required');
     validate(interestRate !== undefined && interestRate >= 0, 'Interest rate is required');
   }
+
+  // Helper to safely round decimal values to 4 places (prevents overflow)
+  const roundDecimal = (value, decimals = 4) => {
+    if (value === null || value === undefined || value === '') return null;
+    const num = Number(value);
+    return isNaN(num) ? null : Math.round(num * Math.pow(10, decimals)) / Math.pow(10, decimals);
+  };
 
   // Create investment
   const investmentData = {
@@ -96,37 +109,37 @@ router.post('/', authenticate, requireInvestmentManagerAccess, catchAsync(async 
     originationDate: originationDate || investmentDate || new Date().toISOString(),
     status: 'Active',
     fundId: fundId || null,
-    fundCommitment: fundCommitment || 0,
+    fundCommitment: roundDecimal(fundCommitment, 2) || 0,
     // Equity fields
-    equityInvested: equityInvested || null,
-    ownershipPercentage: ownershipPercentage || equityOwnershipPercent || null,
-    equityOwnershipPercent: equityOwnershipPercent || ownershipPercentage || null,
-    currentEquityValue: currentEquityValue || equityInvested || null,
-    equityCurrentValue: equityInvested || currentEquityValue || null,
+    equityInvested: roundDecimal(equityInvested, 2),
+    ownershipPercentage: roundDecimal(ownershipPercentage || equityOwnershipPercent, 4),
+    equityOwnershipPercent: roundDecimal(equityOwnershipPercent || ownershipPercentage, 4),
+    currentEquityValue: roundDecimal(currentEquityValue || equityInvested, 2),
+    equityCurrentValue: roundDecimal(equityInvested || currentEquityValue, 2),
     equityExitValue: null,
     equityRealizedGain: null,
-    unrealizedGain: unrealizedGain || 0,
+    unrealizedGain: roundDecimal(unrealizedGain, 2) || 0,
     // Debt fields
-    principalProvided: principalProvided || null,
-    interestRate: interestRate || null,
+    principalProvided: roundDecimal(principalProvided, 2),
+    interestRate: roundDecimal(interestRate, 4),
     maturityDate: maturityDate || null,
     principalRepaid: 0,
     interestReceived: 0,
-    outstandingPrincipal: principalProvided || null,
-    accruedInterest: accruedInterest || 0,
-    currentDebtValue: currentDebtValue || 0,
+    outstandingPrincipal: roundDecimal(principalProvided, 2),
+    accruedInterest: roundDecimal(accruedInterest, 2) || 0,
+    currentDebtValue: roundDecimal(currentDebtValue, 2) || 0,
     // Performance metrics
-    irr: irr || 0,
-    irrPercent: irr || 0,
-    multiple: multiple || 0,
-    moic: multiple || 0,
+    irr: roundDecimal(irr, 4) || 0,
+    irrPercent: roundDecimal(irr, 4) || 0,
+    multiple: roundDecimal(multiple, 4) || 0,
+    moic: roundDecimal(multiple, 4) || 0,
     totalReturns: 0,
-    currentValue: currentValue || 0,
-    totalInvested: totalInvested || 0,
-    totalInvestmentSize: totalInvestmentSize || 0,
+    currentValue: roundDecimal(currentValue, 2) || 0,
+    totalInvested: roundDecimal(totalInvested, 2) || 0,
+    totalInvestmentSize: roundDecimal(totalInvestmentSize, 2) || 0,
     lastValuationDate: lastValuationDate || null,
     // Property specific
-    totalPropertyValue: totalPropertyValue || 0,
+    totalPropertyValue: roundDecimal(totalPropertyValue, 2) || 0,
     // Additional info
     sector: sector?.trim() || '',
     geography: geography?.trim() || '',
