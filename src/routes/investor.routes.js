@@ -28,12 +28,13 @@ router.use((req, res, next) => {
 
 /**
  * @route   POST /api/investors
- * @desc    Create a new investor
+ * @desc    Update an existing user to become an investor
  * @access  Private (requires authentication, Root/Admin only)
  */
 router.post('/', authenticate, requireInvestmentManagerAccess, catchAsync(async (req, res) => {
 
   const {
+    userId,
     investorType,
     email,
     phoneNumber,
@@ -70,17 +71,17 @@ router.post('/', authenticate, requireInvestmentManagerAccess, catchAsync(async 
   } = req.body;
 
   // Validate required fields
+  validate(userId, 'User ID is required');
   validate(investorType, 'Investor type is required');
   validate(['Individual', 'Institution', 'Fund of Funds', 'Family Office'].includes(investorType), 'Invalid investor type');
-  validate(email, 'Email is required');
 
-  // Validate email format
-  const emailRegex = /^\S+@\S+\.\S+$/;
-  validate(emailRegex.test(email), 'Invalid email format');
+  // Validate UUID format
+  const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  validate(uuidRegex.test(userId), 'Invalid user ID format');
 
-  // Check if email already exists
-  const existingUser = await User.findByEmail(email);
-  validate(!existingUser, 'User with this email already exists');
+  // Find existing user
+  const existingUser = await User.findById(userId);
+  validate(existingUser, 'User not found');
 
   // Validate type-specific required fields
   if (investorType === 'Individual') {
@@ -93,21 +94,31 @@ router.post('/', authenticate, requireInvestmentManagerAccess, catchAsync(async 
     validate(officeName, 'Office name is required');
   }
 
-  // Create investor user
+  // Prepare update data
   const investorData = {
     role: ROLES.INVESTOR,
     investorType,
-    email: email.toLowerCase(),
     phoneNumber: phoneNumber?.trim() || '',
     country: country?.trim() || '',
     taxId: taxId?.trim() || '',
-    kycStatus: kycStatus || 'Pending',
+    kycStatus: kycStatus || 'Not Started',
     accreditedInvestor: accreditedInvestor || false,
     riskTolerance: riskTolerance?.trim() || '',
-    investmentPreferences: investmentPreferences || {},
-    firstName: '', // Required by User model
-    isActive: true
+    investmentPreferences: investmentPreferences || {}
   };
+
+  // Update email if provided
+  if (email && email.toLowerCase() !== existingUser.email) {
+    // Validate email format
+    const emailRegex = /^\S+@\S+\.\S+$/;
+    validate(emailRegex.test(email), 'Invalid email format');
+
+    // Check if email already exists for another user
+    const emailUser = await User.findByEmail(email);
+    validate(!emailUser || emailUser.id === userId, 'Email already in use by another user');
+
+    investorData.email = email.toLowerCase();
+  }
 
   // Add type-specific fields
   if (investorType === 'Individual') {
@@ -136,12 +147,13 @@ router.post('/', authenticate, requireInvestmentManagerAccess, catchAsync(async 
     investorData.assetsUnderManagement = assetsUnderManagement || null;
   }
 
-  const user = await User.create(investorData);
+  // Update user
+  const updatedUser = await User.findByIdAndUpdate(userId, investorData);
 
-  res.status(201).json({
+  res.status(200).json({
     success: true,
-    message: 'Investor created successfully',
-    data: user
+    message: 'User updated to investor successfully',
+    data: updatedUser
   });
 }));
 
