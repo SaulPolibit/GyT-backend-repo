@@ -266,6 +266,8 @@ class NotificationSettings {
       notificationFrequency: dbSettings.notification_frequency,
       preferredContactMethod: dbSettings.preferred_contact_method,
       reportDeliveryFormat: dbSettings.report_delivery_format,
+      documentUploads: dbSettings.document_uploads,
+      generalAnnouncements: dbSettings.general_announcements,
       createdAt: dbSettings.created_at,
       updatedAt: dbSettings.updated_at,
 
@@ -328,6 +330,8 @@ class NotificationSettings {
       notificationFrequency: 'notification_frequency',
       preferredContactMethod: 'preferred_contact_method',
       reportDeliveryFormat: 'report_delivery_format',
+      documentUploads: 'document_uploads',
+      generalAnnouncements: 'general_announcements',
     };
 
     Object.entries(modelData).forEach(([key, value]) => {
