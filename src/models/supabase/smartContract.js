@@ -357,11 +357,19 @@ class SmartContract {
     };
 
     if (deploymentData) {
-      if (deploymentData.contractAddress) updateData.contractAddress = deploymentData.contractAddress;
-      if (deploymentData.transactionHash) updateData.transactionHash = deploymentData.transactionHash;
-      if (deploymentData.complianceRegistryAddress) updateData.complianceRegistryAddress = deploymentData.complianceRegistryAddress;
-      if (deploymentData.factoryAddress) updateData.factoryAddress = deploymentData.factoryAddress;
-      if (deploymentData.identityRegistryAddress) updateData.identityRegistryAddress = deploymentData.identityRegistryAddress;
+      // Extract deployment details from nested structure
+      const deployment = deploymentData.deployment || deploymentData;
+
+      // Map tokenAddress to contractAddress
+      if (deployment.tokenAddress) updateData.contractAddress = deployment.tokenAddress;
+      if (deployment.contractAddress) updateData.contractAddress = deployment.contractAddress;
+
+      if (deployment.transactionHash) updateData.transactionHash = deployment.transactionHash;
+      if (deployment.complianceRegistryAddress) updateData.complianceRegistryAddress = deployment.complianceRegistryAddress;
+      if (deployment.factoryAddress) updateData.factoryAddress = deployment.factoryAddress;
+      if (deployment.identityRegistryAddress) updateData.identityRegistryAddress = deployment.identityRegistryAddress;
+
+      // Store the full response
       updateData.deploymentResponse = deploymentData;
     }
 
