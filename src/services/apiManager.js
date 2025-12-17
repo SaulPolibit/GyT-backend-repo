@@ -1246,10 +1246,13 @@ async getDiditToken(_context, _variables) {
   }
 
   async deployContractERC3643(context, variables) {
-    const {
+    let {
       authToken, contractTokenName, contractTokenSymbol, contractTokenValue,
       contractMaxTokens, company, currency, projectName, operatingAgreementHash
     } = variables;
+
+    // Convert null to 'n/a' for operatingAgreementHash
+    operatingAgreementHash = operatingAgreementHash || 'n/a';
 
     // Build params object, only include operatingAgreementHash if it's provided
     const params = {
@@ -1262,8 +1265,8 @@ async getDiditToken(_context, _variables) {
       projectName,
     };
 
-    // Only add operatingAgreementHash if it's provided and not 'n/a'
-    if (operatingAgreementHash != null && operatingAgreementHash !== 'n/a') {
+    // Only add operatingAgreementHash if it's not 'n/a'
+    if (operatingAgreementHash !== 'n/a') {
       params.operatingAgreementHash = operatingAgreementHash;
     }
 
