@@ -1248,8 +1248,24 @@ async getDiditToken(_context, _variables) {
   async deployContractERC3643(context, variables) {
     const {
       authToken, contractTokenName, contractTokenSymbol, contractTokenValue,
-      contractMaxTokens, company, currency, projectName
+      contractMaxTokens, company, currency, projectName, operatingAgreementHash
     } = variables;
+
+    // Build params object, only include operatingAgreementHash if it's provided
+    const params = {
+      name: contractTokenName,
+      symbol: contractTokenSymbol,
+      tokenValue: contractTokenValue,
+      maxTokens: contractMaxTokens,
+      company,
+      currency,
+      projectName,
+    };
+
+    // Only add operatingAgreementHash if it's not null/undefined
+    if (operatingAgreementHash != null) {
+      params.operatingAgreementHash = operatingAgreementHash;
+    }
 
     return httpClient.makeApiRequest({
       method: 'get',
@@ -1258,15 +1274,7 @@ async getDiditToken(_context, _variables) {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${authToken}`,
       },
-      params: {
-        name: contractTokenName,
-        symbol: contractTokenSymbol,
-        tokenValue: contractTokenValue,
-        maxTokens: contractMaxTokens,
-        company,
-        currency,
-        projectName,
-      },
+      params,
       returnBody: true,
       isStreamingApi: false,
     });
