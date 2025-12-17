@@ -2840,7 +2840,8 @@ router.post('/deploy/erc3643', requireApiKey, requireBearerToken, catchAsync(asy
     company,
     currency,
     projectName,
-    network
+    network,
+    operatingAgreementHash
   } = req.body;
 
   // Validate required fields
@@ -2865,7 +2866,8 @@ router.post('/deploy/erc3643', requireApiKey, requireBearerToken, catchAsync(asy
     tokenSymbol: contractTokenSymbol,
     tokenValue: contractTokenValue,
     deployedBy: req.auth?.userId || req.auth?.sub,
-    network: network || 'polygon'
+    network: network || 'polygon',
+    operatingAgreementHash: operatingAgreementHash || null
   };
 
   try {

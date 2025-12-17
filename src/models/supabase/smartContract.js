@@ -248,6 +248,7 @@ class SmartContract {
       deployedBy: dbContract.deployed_by,
       deploymentError: dbContract.deployment_error,
       deploymentResponse: dbContract.deployment_response,
+      operatingAgreementHash: dbContract.operating_agreement_hash,
       createdAt: dbContract.created_at,
       updatedAt: dbContract.updated_at,
 
@@ -334,6 +335,7 @@ class SmartContract {
       deployedBy: 'deployed_by',
       deploymentError: 'deployment_error',
       deploymentResponse: 'deployment_response',
+      operatingAgreementHash: 'operating_agreement_hash',
     };
 
     Object.entries(modelData).forEach(([key, value]) => {

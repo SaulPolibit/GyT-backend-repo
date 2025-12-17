@@ -103,6 +103,10 @@ const smartContractSchema = new mongoose.Schema({
   },
   deploymentResponse: {
     type: mongoose.Schema.Types.Mixed
+  },
+  operatingAgreementHash: {
+    type: String,
+    trim: true
   }
 }, {
   timestamps: true // Adds createdAt and updatedAt
