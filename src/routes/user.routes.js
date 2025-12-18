@@ -110,6 +110,23 @@ router.post('/register', authenticate, catchAsync(async (req, res) => {
       });
     }
 
+    // Update password in Supabase Auth to match the new password
+    const { error: updatePasswordError } = await adminClient.auth.admin.updateUserById(
+      authUser.id,
+      { password: password }
+    );
+
+    if (updatePasswordError) {
+      console.error('Error updating password in Supabase Auth:', updatePasswordError);
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to update password during sync',
+        error: updatePasswordError.message
+      });
+    }
+
+    console.log('Password updated in Supabase Auth for user:', authUser.id);
+
     // Create user in users table with existing Auth ID
     let user;
     try {
