@@ -720,7 +720,7 @@ router.get('/:id/capital-calls', authenticate, catchAsync(async (req, res) => {
 
 /**
  * @route   PUT /api/investors/:id
- * @desc    Update an investor
+ * @desc    Update an investor record
  * @access  Private (requires authentication, Root/Admin/Own investor)
  */
 router.put('/:id', authenticate, catchAsync(async (req, res) => {
@@ -732,29 +732,29 @@ router.put('/:id', authenticate, catchAsync(async (req, res) => {
   const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
   validate(uuidRegex.test(id), 'Invalid investor ID format');
 
-  const user = await User.findById(id);
-  validate(user, 'Investor not found');
-  validate(user.role === ROLES.INVESTOR, 'User is not an investor');
+  // Find investor record by ID
+  const investor = await Investor.findById(id);
+  validate(investor, 'Investor not found');
+
+  // Fetch associated user for access control
+  const user = investor.userId ? await User.findById(investor.userId) : null;
+  validate(user, 'Associated user not found');
 
   // Check access: Root/Admin can update any, Investors can only update their own
   const hasAccess =
     requestingUserRole === ROLES.ROOT ||
     requestingUserRole === ROLES.ADMIN ||
-    (requestingUserRole === ROLES.INVESTOR && requestingUserId === id);
+    (requestingUserRole === ROLES.INVESTOR && requestingUserId === investor.userId);
 
   validate(hasAccess, 'Unauthorized access to investor data');
 
   const isAdmin = requestingUserRole === ROLES.ROOT || requestingUserRole === ROLES.ADMIN;
 
-  // Check if email is being updated
-  if (req.body.email && req.body.email !== user.email) {
+  // Check if email is being updated (investor's email in investor table)
+  if (req.body.email && req.body.email !== investor.email) {
     // Validate email format
     const emailRegex = /^\S+@\S+\.\S+$/;
     validate(emailRegex.test(req.body.email), 'Invalid email format');
-
-    // Check if email is already used by another user
-    const existingUser = await User.findByEmail(req.body.email);
-    validate(!existingUser || existingUser.id === id, 'Email already in use by another user');
   }
 
   // Fields that only admins can update
@@ -819,12 +819,26 @@ router.put('/:id', authenticate, catchAsync(async (req, res) => {
 
   validate(Object.keys(updateData).length > 0, 'No valid fields provided for update');
 
-  const updatedUser = await User.findByIdAndUpdate(id, updateData);
+  // Update investor record
+  const updatedInvestor = await Investor.findByIdAndUpdate(id, updateData);
+
+  // Build response with investor and user data
+  const investorWithUser = {
+    ...updatedInvestor,
+    user: user ? {
+      id: user.id,
+      firstName: user.firstName,
+      lastName: user.lastName,
+      email: user.email,
+      role: user.role,
+      isActive: user.isActive
+    } : null
+  };
 
   res.status(200).json({
     success: true,
     message: 'Investor updated successfully',
-    data: updatedUser
+    data: investorWithUser
   });
 }));
 
