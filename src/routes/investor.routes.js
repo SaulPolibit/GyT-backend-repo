@@ -196,7 +196,8 @@ router.get('/', authenticate, requireInvestmentManagerAccess, catchAsync(async (
           firstName: user.firstName,
           lastName: user.lastName,
           email: user.email,
-          role: user.role
+          role: user.role,
+          isActive: user.isActive
         } : null,
         structure: structure ? {
           id: structure.id,
