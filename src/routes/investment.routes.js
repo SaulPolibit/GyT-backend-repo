@@ -5,7 +5,7 @@
 const express = require('express');
 const { authenticate } = require('../middleware/auth');
 const { catchAsync, validate } = require('../middleware/errorHandler');
-const { Investment, Structure, Investor } = require('../models/supabase');
+const { Investment, Structure } = require('../models/supabase');
 const { requireInvestmentManagerAccess, getUserContext, ROLES } = require('../middleware/rbac');
 
 const router = express.Router();
@@ -55,20 +55,7 @@ router.post('/', authenticate, requireInvestmentManagerAccess, catchAsync(async 
     sector,
     geography,
     currency,
-    notes,
-    // Investor fields
-    investorType,
-    email,
-    phoneNumber,
-    country,
-    taxId,
-    kycStatus,
-    accreditedInvestor,
-    riskTolerance,
-    investmentPreferences,
-    fundName,
-    fundManager,
-    aum
+    notes
   } = req.body;
 
   // Validate required fields
@@ -101,56 +88,6 @@ router.post('/', authenticate, requireInvestmentManagerAccess, catchAsync(async 
     validate(principalProvided !== undefined && principalProvided > 0, 'Principal provided amount is required');
     validate(interestRate !== undefined && interestRate >= 0, 'Interest rate is required');
     validate(interestRate <= 100, 'Interest rate must be between 0 and 100 (percentage)');
-  }
-
-  // Handle investor data - create or update investor record for this user-structure combination
-  if (investorType) {
-    // Check if investor record exists for this user-structure combination
-    const existingInvestors = await Investor.find({
-      userId: userId,
-      structureId: structureId
-    });
-
-    if (existingInvestors && existingInvestors.length > 0) {
-      // Update existing investor record
-      const investorUpdateData = {
-        investorType,
-        email: email || existingInvestors[0].email,
-        phoneNumber: phoneNumber || existingInvestors[0].phoneNumber,
-        country: country || existingInvestors[0].country,
-        taxId: taxId || existingInvestors[0].taxId,
-        kycStatus: kycStatus || existingInvestors[0].kycStatus,
-        accreditedInvestor: accreditedInvestor !== undefined ? accreditedInvestor : existingInvestors[0].accreditedInvestor,
-        riskTolerance: riskTolerance || existingInvestors[0].riskTolerance,
-        investmentPreferences: investmentPreferences || existingInvestors[0].investmentPreferences,
-        fundName: fundName || existingInvestors[0].fundName,
-        fundManager: fundManager || existingInvestors[0].fundManager,
-        aum: aum || existingInvestors[0].aum
-      };
-
-      await Investor.findByIdAndUpdate(existingInvestors[0].id, investorUpdateData);
-    } else {
-      // Create new investor record
-      const investorData = {
-        userId,
-        structureId,
-        investorType,
-        email: email || '',
-        phoneNumber: phoneNumber || '',
-        country: country || '',
-        taxId: taxId || '',
-        kycStatus: kycStatus || 'Not Started',
-        accreditedInvestor: accreditedInvestor || false,
-        riskTolerance: riskTolerance || '',
-        investmentPreferences: investmentPreferences || '',
-        fundName: fundName || '',
-        fundManager: fundManager || '',
-        aum: aum || null,
-        createdBy: userId
-      };
-
-      await Investor.create(investorData);
-    }
   }
 
   // Helper to safely round decimal values to 4 places (prevents overflow)
@@ -379,71 +316,6 @@ router.put('/:id', authenticate, requireInvestmentManagerAccess, catchAsync(asyn
   }
   if (updateData.equityOwnershipPercent !== undefined) {
     validate(updateData.equityOwnershipPercent >= 0 && updateData.equityOwnershipPercent <= 100, 'Equity ownership percent must be between 0 and 100');
-  }
-
-  // Handle investor data update if provided
-  const {
-    investorType,
-    email,
-    phoneNumber,
-    country,
-    taxId,
-    kycStatus,
-    accreditedInvestor,
-    riskTolerance,
-    investmentPreferences,
-    fundName,
-    fundManager,
-    aum
-  } = req.body;
-
-  if (investorType) {
-    // Check if investor record exists for this user-structure combination
-    const existingInvestors = await Investor.find({
-      userId: investment.userId,
-      structureId: investment.structureId
-    });
-
-    if (existingInvestors && existingInvestors.length > 0) {
-      // Update existing investor record
-      const investorUpdateData = {
-        investorType,
-        email: email || existingInvestors[0].email,
-        phoneNumber: phoneNumber || existingInvestors[0].phoneNumber,
-        country: country || existingInvestors[0].country,
-        taxId: taxId || existingInvestors[0].taxId,
-        kycStatus: kycStatus || existingInvestors[0].kycStatus,
-        accreditedInvestor: accreditedInvestor !== undefined ? accreditedInvestor : existingInvestors[0].accreditedInvestor,
-        riskTolerance: riskTolerance || existingInvestors[0].riskTolerance,
-        investmentPreferences: investmentPreferences || existingInvestors[0].investmentPreferences,
-        fundName: fundName || existingInvestors[0].fundName,
-        fundManager: fundManager || existingInvestors[0].fundManager,
-        aum: aum || existingInvestors[0].aum
-      };
-
-      await Investor.findByIdAndUpdate(existingInvestors[0].id, investorUpdateData);
-    } else {
-      // Create new investor record
-      const investorData = {
-        userId: investment.userId,
-        structureId: investment.structureId,
-        investorType,
-        email: email || '',
-        phoneNumber: phoneNumber || '',
-        country: country || '',
-        taxId: taxId || '',
-        kycStatus: kycStatus || 'Not Started',
-        accreditedInvestor: accreditedInvestor || false,
-        riskTolerance: riskTolerance || '',
-        investmentPreferences: investmentPreferences || '',
-        fundName: fundName || '',
-        fundManager: fundManager || '',
-        aum: aum || null,
-        createdBy: investment.userId
-      };
-
-      await Investor.create(investorData);
-    }
   }
 
   const updatedInvestment = await Investment.findByIdAndUpdate(id, updateData);
