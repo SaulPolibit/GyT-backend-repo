@@ -7,6 +7,7 @@ const { authenticate } = require('../middleware/auth');
 const { catchAsync, validate } = require('../middleware/errorHandler');
 const User = require('../models/supabase/user');
 const Investor = require('../models/supabase/investor');
+const Structure = require('../models/supabase/structure');
 const { requireInvestmentManagerAccess, ROLES } = require('../middleware/rbac');
 const { getSupabase } = require('../config/database');
 
@@ -169,26 +170,54 @@ router.post('/', authenticate, requireInvestmentManagerAccess, catchAsync(async 
 
 /**
  * @route   GET /api/investors
- * @desc    Get all investors (role-based filtering applied)
+ * @desc    Get all investors from Investor model with associated user and structure data
  * @access  Private (requires authentication, Root/Admin only)
  */
 router.get('/', authenticate, requireInvestmentManagerAccess, catchAsync(async (req, res) => {
-  const { investorType, kycStatus, accreditedInvestor } = req.query;
+  const { investorType, kycStatus, accreditedInvestor, userId, structureId } = req.query;
 
-  let filter = {
-    role: ROLES.INVESTOR
-  };
+  // Build filter for Investor model
+  let filter = {};
 
   if (investorType) filter.investorType = investorType;
   if (kycStatus) filter.kycStatus = kycStatus;
   if (accreditedInvestor !== undefined) filter.accreditedInvestor = accreditedInvestor === 'true';
+  if (userId) filter.userId = userId;
+  if (structureId) filter.structureId = structureId;
 
-  const investors = await User.find(filter);
+  // Get investors from Investor model
+  const investors = await Investor.find(filter);
+
+  // Fetch associated user and structure data for each investor
+  const investorsWithData = await Promise.all(
+    investors.map(async (investor) => {
+      const user = investor.userId ? await User.findById(investor.userId) : null;
+      const structure = investor.structureId ? await Structure.findById(investor.structureId) : null;
+
+      return {
+        ...investor,
+        user: user ? {
+          id: user.id,
+          firstName: user.firstName,
+          lastName: user.lastName,
+          email: user.email,
+          role: user.role
+        } : null,
+        structure: structure ? {
+          id: structure.id,
+          name: structure.name,
+          type: structure.type,
+          status: structure.status,
+          baseCurrency: structure.baseCurrency
+        } : null
+      };
+    })
+  );
 
   res.status(200).json({
     success: true,
-    count: investors.length,
-    data: investors
+    count: investorsWithData.length,
+    data: investorsWithData
   });
 }));
 
