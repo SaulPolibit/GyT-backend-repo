@@ -37,7 +37,7 @@ class Investment {
       unrealizedGain: 'unrealized_gain',
       // Debt fields
       principalProvided: 'principal_provided',
-      interestRate: 'interest_rate',
+      interestRate: 'interest_rate_percent',
       maturityDate: 'maturity_date',
       principalRepaid: 'principal_repaid',
       interestReceived: 'interest_received',
@@ -107,7 +107,7 @@ class Investment {
       unrealizedGain: dbData.unrealized_gain,
       // Debt fields
       principalProvided: dbData.principal_provided,
-      interestRate: dbData.interest_rate,
+      interestRate: dbData.interest_rate_percent,
       maturityDate: dbData.maturity_date,
       principalRepaid: dbData.principal_repaid,
       interestReceived: dbData.interest_received,

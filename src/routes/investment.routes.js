@@ -87,6 +87,7 @@ router.post('/', authenticate, requireInvestmentManagerAccess, catchAsync(async 
   if (investmentType === 'DEBT' || investmentType === 'MIXED') {
     validate(principalProvided !== undefined && principalProvided > 0, 'Principal provided amount is required');
     validate(interestRate !== undefined && interestRate >= 0, 'Interest rate is required');
+    validate(interestRate <= 100, 'Interest rate must be between 0 and 100 (percentage)');
   }
 
   // Helper to safely round decimal values to 4 places (prevents overflow)
@@ -303,6 +304,19 @@ router.put('/:id', authenticate, requireInvestmentManagerAccess, catchAsync(asyn
   }
 
   validate(Object.keys(updateData).length > 0, 'No valid fields provided for update');
+
+  // Validate interest rate if being updated
+  if (updateData.interestRate !== undefined) {
+    validate(updateData.interestRate >= 0 && updateData.interestRate <= 100, 'Interest rate must be between 0 and 100 (percentage)');
+  }
+
+  // Validate ownership percentages if being updated
+  if (updateData.ownershipPercentage !== undefined) {
+    validate(updateData.ownershipPercentage >= 0 && updateData.ownershipPercentage <= 100, 'Ownership percentage must be between 0 and 100');
+  }
+  if (updateData.equityOwnershipPercent !== undefined) {
+    validate(updateData.equityOwnershipPercent >= 0 && updateData.equityOwnershipPercent <= 100, 'Equity ownership percent must be between 0 and 100');
+  }
 
   const updatedInvestment = await Investment.findByIdAndUpdate(id, updateData);
 
