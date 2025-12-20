@@ -33,7 +33,7 @@ router.post('/register', authenticate, catchAsync(async (req, res) => {
   if (role === undefined || role === null) {
     return res.status(400).json({
       success: false,
-      message: 'Role is required. Must be 0 (root), 1 (admin), 2 (support), or 3 (investor)'
+      message: 'Role is required. Must be 0 (root), 1 (admin), 2 (support), 3 (investor), or 4 (guest)'
     });
   }
 
@@ -389,10 +389,10 @@ router.put('/profile', authenticate, catchAsync(async (req, res) => {
   // Validate role if being updated
   if (role !== undefined && role !== null) {
     // Validate role value
-    if (role !== 0 && role !== 1 && role !== 2 && role !== 3) {
+    if (role !== 0 && role !== 1 && role !== 2 && role !== 3 && role !== 4) {
       return res.status(400).json({
         success: false,
-        message: 'Invalid role. Must be 0 (root), 1 (admin), 2 (support), or 3 (investor)'
+        message: 'Invalid role. Must be 0 (root), 1 (admin), 2 (support), 3 (investor), or 4 (guest)'
       });
     }
     updateData.role = role;

@@ -25,7 +25,7 @@ class User {
    * @returns {boolean} True if valid role
    */
   static isValidRole(role) {
-    return role === 0 || role === 1 || role === 2 || role === 3;
+    return role === 0 || role === 1 || role === 2 || role === 3 || role === 4;
   }
 
   /**
@@ -38,12 +38,12 @@ class User {
 
     // Validate role is required
     if (userData.role === undefined || userData.role === null) {
-      throw new Error('Role is required. Must be 0 (root), 1 (admin), 2 (support), or 3 (investor)');
+      throw new Error('Role is required. Must be 0 (root), 1 (admin), 2 (support), 3 (investor), or 4 (guest)');
     }
 
     // Validate role value
     if (!this.isValidRole(userData.role)) {
-      throw new Error('Invalid role. Must be 0 (root), 1 (admin), 2 (support), or 3 (investor)');
+      throw new Error('Invalid role. Must be 0 (root), 1 (admin), 2 (support), 3 (investor), or 4 (guest)');
     }
 
     // Hash password before storing
@@ -264,7 +264,7 @@ class User {
     // Validate role if being updated
     if (updateData.role !== undefined && updateData.role !== null) {
       if (!this.isValidRole(updateData.role)) {
-        throw new Error('Invalid role. Must be 0 (root), 1 (admin), 2 (support), or 3 (investor)');
+        throw new Error('Invalid role. Must be 0 (root), 1 (admin), 2 (support), 3 (investor), or 4 (guest)');
       }
     }
 
