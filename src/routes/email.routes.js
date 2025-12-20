@@ -107,12 +107,19 @@ router.get('/:userId/email-settings', authenticate, catchAsync(async (req, res) 
     });
   }
 
-  const settings = await EmailSettings.findByUserId(targetUserId);
+  let settings = await EmailSettings.findByUserId(targetUserId);
 
   if (!settings) {
-    return res.status(404).json({
-      success: false,
-      error: 'Email settings not found'
+    // Create default settings for the logged-in user (not the target user from params)
+    settings = await EmailSettings.upsert(userId, {
+      smtpHost: '',
+      smtpPort: 587,
+      smtpSecure: false,
+      smtpUsername: '',
+      fromEmail: '',
+      fromName: '',
+      replyToEmail: '',
+      isActive: true
     });
   }
 
