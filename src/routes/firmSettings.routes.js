@@ -8,7 +8,7 @@ const { catchAsync, validate } = require('../middleware/errorHandler');
 const FirmSettings = require('../models/supabase/firmSettings');
 const { handleFirmLogoUpload } = require('../middleware/upload');
 const { uploadToSupabase } = require('../utils/fileUpload');
-const { ROLES, canCreate, getUserContext } = require('../middleware/rbac');
+const { canCreate, getUserContext } = require('../middleware/rbac');
 
 const router = express.Router();
 
