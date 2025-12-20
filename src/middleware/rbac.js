@@ -7,6 +7,7 @@
  * - ADMIN (1): Can create, edit, delete items belonging to structures assigned in structure_admins table
  * - SUPPORT (2): Can edit items belonging to structures assigned in structure_admins table (NOT structures themselves)
  * - INVESTOR (3): Can only create, edit, and read their own investments
+ * - GUEST (4): Read-only access - can only view data, cannot modify anything
  */
 
 // Role constants
@@ -14,12 +15,13 @@ const ROLES = {
   ROOT: 0,
   ADMIN: 1,
   SUPPORT: 2,
-  INVESTOR: 3
+  INVESTOR: 3,
+  GUEST: 4
 };
 
 /**
  * Middleware to restrict access to investment manager endpoints
- * Blocks investors (role = 3) from accessing admin-only endpoints
+ * Blocks investors (role = 3) and guests (role = 4) from accessing admin-only endpoints
  * Allows Root (0), Admin (1), and Support (2)
  */
 const requireInvestmentManagerAccess = (req, res, next) => {
@@ -30,8 +32,8 @@ const requireInvestmentManagerAccess = (req, res, next) => {
 
   const userRole = req.user?.role ?? req.auth?.role;
 
-  // Block investors from accessing investment manager endpoints
-  if (userRole === ROLES.INVESTOR) {
+  // Block investors and guests from accessing investment manager endpoints
+  if (userRole === ROLES.INVESTOR || userRole === ROLES.GUEST) {
     return res.status(403).json({
       success: false,
       message: 'Access denied. This endpoint is only available to Root, Admin, and Support users.'
@@ -68,9 +70,10 @@ const requireRootAccess = (req, res, next) => {
  * Admin (1): Adds creator filter to criteria
  * Support (2): Returns criteria unchanged (sees everything, read-only)
  * Investor (3): Returns null (should be blocked by middleware)
+ * Guest (4): Returns criteria unchanged (sees everything, read-only)
  *
  * @param {Object} criteria - Base query criteria
- * @param {number} userRole - User's role (0, 1, 2, or 3)
+ * @param {number} userRole - User's role (0, 1, 2, 3, or 4)
  * @param {string} userId - User's ID
  * @param {string} creatorField - Field name to filter by (default: 'createdBy')
  * @returns {Object|null} Modified criteria or null if access denied
@@ -83,6 +86,11 @@ const applyRoleFilter = (criteria = {}, userRole, userId, creatorField = 'create
 
   // Support sees everything (read-only access)
   if (userRole === ROLES.SUPPORT) {
+    return criteria;
+  }
+
+  // Guest sees everything (read-only access)
+  if (userRole === ROLES.GUEST) {
     return criteria;
   }
 
@@ -109,9 +117,10 @@ const applyRoleFilter = (criteria = {}, userRole, userId, creatorField = 'create
  * Admin (1): Returns only items created by the user
  * Support (2): Returns all items (read-only access)
  * Investor (3): Returns empty array
+ * Guest (4): Returns all items (read-only access)
  *
  * @param {Array} items - Array of items to filter
- * @param {number} userRole - User's role (0, 1, 2, or 3)
+ * @param {number} userRole - User's role (0, 1, 2, 3, or 4)
  * @param {string} userId - User's ID
  * @returns {Array} Filtered array
  */
@@ -127,6 +136,11 @@ const filterByRole = (items, userRole, userId) => {
 
   // Support sees everything (read-only access)
   if (userRole === ROLES.SUPPORT) {
+    return items;
+  }
+
+  // Guest sees everything (read-only access)
+  if (userRole === ROLES.GUEST) {
     return items;
   }
 
@@ -155,6 +169,7 @@ const filterByRole = (items, userRole, userId) => {
  * Admin can edit only their own items
  * Support cannot edit (read-only)
  * Investor cannot edit
+ * Guest cannot edit (read-only)
  */
 const canEdit = (item, userRole, userId) => {
   if (userRole === ROLES.ROOT) return true;
@@ -165,7 +180,7 @@ const canEdit = (item, userRole, userId) => {
     return creatorId === userId;
   }
 
-  // Support and Investor cannot edit
+  // Support, Investor, and Guest cannot edit
   return false;
 };
 
@@ -185,6 +200,7 @@ const canDelete = (item, userRole, userId) => {
  * Root and Admin can create
  * Support cannot create (read-only)
  * Investor cannot create
+ * Guest cannot create (read-only)
  */
 const canCreate = (userRole) => {
   return userRole === ROLES.ROOT || userRole === ROLES.ADMIN;
@@ -217,6 +233,9 @@ const getUserContext = (req) => {
 const canAccessStructure = async (structure, userRole, userId, StructureAdmin) => {
   // Root can access everything
   if (userRole === ROLES.ROOT) return true;
+
+  // Guest can view all structures (read-only)
+  if (userRole === ROLES.GUEST) return true;
 
   // Investors cannot access structures
   if (userRole === ROLES.INVESTOR) return false;
@@ -252,8 +271,8 @@ const canEditStructure = async (structure, userRole, userId, StructureAdmin) => 
   // Root can edit everything
   if (userRole === ROLES.ROOT) return true;
 
-  // Support and Investor cannot edit structures
-  if (userRole === ROLES.SUPPORT || userRole === ROLES.INVESTOR) return false;
+  // Support, Investor, and Guest cannot edit structures
+  if (userRole === ROLES.SUPPORT || userRole === ROLES.INVESTOR || userRole === ROLES.GUEST) return false;
 
   // Admin can edit structures they created
   if (userRole === ROLES.ADMIN && structure.createdBy === userId) {
@@ -319,6 +338,9 @@ const canAccessStructureItems = async (structureId, userRole, userId, StructureA
 const getUserStructureIds = async (userRole, userId, StructureAdmin) => {
   // Root sees everything
   if (userRole === ROLES.ROOT) return null;
+
+  // Guest sees everything (read-only)
+  if (userRole === ROLES.GUEST) return null;
 
   // Investor doesn't access structures
   if (userRole === ROLES.INVESTOR) return [];
