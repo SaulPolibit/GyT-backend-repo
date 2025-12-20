@@ -264,7 +264,13 @@ class Structure {
       throw new Error(`Error creating structure: ${error.message}`);
     }
 
-    return this._toModel(data);
+    const structure = this._toModel(data);
+
+    // New structures have no investors or investments yet
+    structure.currentInvestors = 0;
+    structure.currentInvestments = 0;
+
+    return structure;
   }
 
   /**
@@ -292,6 +298,26 @@ class Structure {
   }
 
   /**
+   * Get total investment count for a structure (count all investment rows)
+   */
+  static async getInvestmentCount(structureId) {
+    const supabase = getSupabase();
+
+    // Get all investments for this structure
+    const { data, error } = await supabase
+      .from('investments')
+      .select('*')
+      .eq('structure_id', structureId);
+
+    if (error) {
+      console.error(`Error counting investments: ${error.message}`);
+      return 0;
+    }
+
+    return data ? data.length : 0;
+  }
+
+  /**
    * Find structure by ID
    */
   static async findById(id) {
@@ -310,8 +336,9 @@ class Structure {
 
     const structure = this._toModel(data);
 
-    // Get current investor count from investments table
+    // Get current investor count and investment count from investments table
     structure.currentInvestors = await this.getInvestorCount(id);
+    structure.currentInvestments = await this.getInvestmentCount(id);
 
     return structure;
   }
@@ -338,11 +365,12 @@ class Structure {
       throw new Error(`Error finding structures: ${error.message}`);
     }
 
-    // Get current investor counts for all structures
+    // Get current investor counts and investment counts for all structures
     const structures = await Promise.all(
       data.map(async (item) => {
         const structure = this._toModel(item);
         structure.currentInvestors = await this.getInvestorCount(item.id);
+        structure.currentInvestments = await this.getInvestmentCount(item.id);
         return structure;
       })
     );
@@ -379,11 +407,12 @@ class Structure {
       throw new Error(`Error fetching structure tree: ${error.message}`);
     }
 
-    // Get current investor counts for all structures
+    // Get current investor counts and investment counts for all structures
     const structures = await Promise.all(
       data.map(async (item) => {
         const structure = this._toModel(item);
         structure.currentInvestors = await this.getInvestorCount(item.id);
+        structure.currentInvestments = await this.getInvestmentCount(item.id);
         return structure;
       })
     );
@@ -408,11 +437,12 @@ class Structure {
       throw new Error(`Error finding root structures: ${error.message}`);
     }
 
-    // Get current investor counts for all structures
+    // Get current investor counts and investment counts for all structures
     const structures = await Promise.all(
       data.map(async (item) => {
         const structure = this._toModel(item);
         structure.currentInvestors = await this.getInvestorCount(item.id);
+        structure.currentInvestments = await this.getInvestmentCount(item.id);
         return structure;
       })
     );
@@ -440,8 +470,9 @@ class Structure {
 
     const structure = this._toModel(data);
 
-    // Get current investor count from investments table
+    // Get current investor count and investment count from investments table
     structure.currentInvestors = await this.getInvestorCount(id);
+    structure.currentInvestments = await this.getInvestmentCount(id);
 
     return structure;
   }
@@ -502,6 +533,9 @@ class Structure {
         .filter(id => id !== null) || []
     );
     structure.currentInvestors = uniqueInvestors.size;
+
+    // Count total investments
+    structure.currentInvestments = investments ? investments.length : 0;
 
     // Attach investments data
     structure.investments = investments;

@@ -240,7 +240,9 @@ router.get('/', authenticate, catchAsync(async (req, res) => {
           name: structure.name,
           type: structure.type,
           status: structure.status,
-          baseCurrency: structure.baseCurrency
+          baseCurrency: structure.baseCurrency,
+          currentInvestors: structure.currentInvestors,
+          currentInvestments: structure.currentInvestments
         } : null,
         payments: userPayments,
         hasFreeDocusealSubmission
@@ -438,7 +440,9 @@ router.get('/:id/with-structures', authenticate, catchAsync(async (req, res) => 
       status: structure.status,
       baseCurrency: structure.baseCurrency,
       totalInvested: structure.totalInvested,
-      description: structure.description
+      description: structure.description,
+      currentInvestors: structure.currentInvestors,
+      currentInvestments: structure.currentInvestments
     } : null
   };
 
