@@ -8,7 +8,7 @@ const { catchAsync, validate } = require('../middleware/errorHandler');
 const { handleDocumentUpload } = require('../middleware/upload');
 const { uploadToSupabase } = require('../utils/fileUpload');
 const { Document, Structure, User, Investor, Investment, CapitalCall, Distribution } = require('../models/supabase');
-const { requireInvestmentManagerAccess, getUserContext, ROLES } = require('../middleware/rbac');
+const { getUserContext, ROLES } = require('../middleware/rbac');
 
 const router = express.Router();
 
@@ -164,20 +164,23 @@ router.post('/', authenticate, handleDocumentUpload, catchAsync(async (req, res)
 /**
  * @route   GET /api/documents/all
  * @desc    Get all documents with role-based filtering and entity data
- * @access  Private (requires authentication, Root/Admin only)
- * @note    Root users see all documents, Admin users see only their own
+ * @access  Private (requires authentication, Root/Admin/Support/Guest only - Investor role blocked)
+ * @note    Root/Support/Guest users see all documents, Admin users see only their own
  */
-router.get('/all', authenticate, requireInvestmentManagerAccess, catchAsync(async (req, res) => {
+router.get('/all', authenticate, catchAsync(async (req, res) => {
   const { userId, userRole } = getUserContext(req);
   const { entityType, documentType, isActive, entityId } = req.query;
 
+  // Block INVESTOR role from accessing this endpoint
+  validate(userRole !== ROLES.INVESTOR, 'Access denied. Investor role cannot access this endpoint.');
+
   let filter = {};
 
-  // Role-based filtering: Root sees all, Admin sees only their own
+  // Role-based filtering: Root/Support/Guest see all, Admin sees only their own
   if (userRole === ROLES.ADMIN) {
     filter.uploadedBy = userId;
   }
-  // Root (role 0) sees all documents, so no uploadedBy filter
+  // Root (0), Support (2), Guest (4) see all documents, so no uploadedBy filter
 
   if (entityType) filter.entityType = entityType;
   if (documentType) filter.documentType = documentType;
