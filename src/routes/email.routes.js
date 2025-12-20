@@ -33,6 +33,7 @@ router.post('/:userId/email-settings', authenticate, catchAsync(async (req, res)
     smtpHost,
     smtpPort,
     smtpSecure,
+    encryption, // Support for 'tls', 'ssl', 'none'
     smtpUsername,
     smtpPassword,
     fromEmail,
@@ -40,10 +41,22 @@ router.post('/:userId/email-settings', authenticate, catchAsync(async (req, res)
     replyToEmail
   } = req.body;
 
+  // Convert encryption string to smtpSecure boolean
+  let finalSmtpSecure = smtpSecure;
+  if (encryption !== undefined) {
+    if (encryption === 'ssl') {
+      finalSmtpSecure = true; // Port 465 with implicit SSL
+    } else if (encryption === 'tls' || encryption === 'starttls') {
+      finalSmtpSecure = false; // Port 587 with STARTTLS
+    } else if (encryption === 'none') {
+      finalSmtpSecure = false; // Port 25 without encryption
+    }
+  }
+
   // Validate required fields
   validate(smtpHost, 'SMTP host is required');
   validate(smtpPort, 'SMTP port is required');
-  validate(smtpSecure !== undefined, 'SMTP secure setting is required');
+  validate(finalSmtpSecure !== undefined, 'SMTP secure setting is required');
   validate(smtpUsername, 'SMTP username is required');
   validate(smtpPassword, 'SMTP password is required');
   validate(fromEmail, 'From email is required');
@@ -62,7 +75,7 @@ router.post('/:userId/email-settings', authenticate, catchAsync(async (req, res)
   const settings = await EmailSettings.upsert(targetUserId, {
     smtpHost,
     smtpPort,
-    smtpSecure,
+    smtpSecure: finalSmtpSecure,
     smtpUsername,
     smtpPassword,
     fromEmail,
