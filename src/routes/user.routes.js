@@ -6,7 +6,7 @@ const express = require('express');
 const { authenticate, createToken } = require('../middleware/auth');
 const { catchAsync, validate } = require('../middleware/errorHandler');
 const { User } = require('../models/supabase');
-const { requireInvestmentManagerAccess, requireRootAccess, ROLES } = require('../middleware/rbac');
+const { requireRootAccess, ROLES, getUserContext } = require('../middleware/rbac');
 const { getSupabase } = require('../config/database');
 const { uploadProfileImage } = require('../middleware/upload');
 const { uploadToSupabase, deleteFromSupabase } = require('../utils/fileUpload');
@@ -600,10 +600,15 @@ router.get('/', authenticate, catchAsync(async (req, res) => {
 /**
  * @route   GET /api/users/filter
  * @desc    Filter users by one or more roles
- * @access  Private (requires authentication, Root/Admin/Support only)
- * @query   role - Single role number (0-3) or comma-separated roles (e.g., ?role=0,1,2)
+ * @access  Private (requires authentication, Root/Admin/Support/Guest only - Investor role blocked)
+ * @query   role - Single role number (0-4) or comma-separated roles (e.g., ?role=0,1,2)
  */
-router.get('/filter', authenticate, requireInvestmentManagerAccess, catchAsync(async (req, res) => {
+router.get('/filter', authenticate, catchAsync(async (req, res) => {
+  const { userRole } = getUserContext(req);
+
+  // Block INVESTOR role from accessing this endpoint
+  validate(userRole !== ROLES.INVESTOR, 'Access denied. Investor role cannot access this endpoint.');
+
   const { role } = req.query;
 
   validate(role !== undefined, 'Role parameter is required');
@@ -620,9 +625,9 @@ router.get('/filter', authenticate, requireInvestmentManagerAccess, catchAsync(a
     roles = [parseInt(role, 10)];
   }
 
-  // Validate all roles are valid numbers 0-3
-  const validRoles = roles.every(r => !isNaN(r) && r >= 0 && r <= 3);
-  validate(validRoles, 'Invalid role value(s). Role must be between 0-3 (0=Root, 1=Admin, 2=Support, 3=Investor)');
+  // Validate all roles are valid numbers 0-4
+  const validRoles = roles.every(r => !isNaN(r) && r >= 0 && r <= 4);
+  validate(validRoles, 'Invalid role value(s). Role must be between 0-4 (0=Root, 1=Admin, 2=Support, 3=Investor, 4=Guest)');
 
   // Get all users
   const allUsers = await User.find({});
