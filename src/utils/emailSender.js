@@ -55,16 +55,35 @@ async function createTransporter(userId) {
     throw new Error('Failed to decrypt SMTP password');
   }
 
-  // Create transporter
-  const transporter = nodemailer.createTransport({
+  // Create transporter with proper SSL/TLS configuration
+  const transportConfig = {
     host: settings.smtpHost,
     port: settings.smtpPort,
-    secure: settings.smtpSecure, // true for 465, false for other ports
+    secure: settings.smtpSecure, // true for 465, false for other ports (587, 25)
     auth: {
       user: settings.smtpUsername,
       pass: password
     }
-  });
+  };
+
+  // Add TLS options for better compatibility
+  if (!settings.smtpSecure) {
+    // For non-secure ports (587, 25), use STARTTLS
+    transportConfig.requireTLS = true;
+    transportConfig.tls = {
+      // Do not fail on invalid certs (useful for self-signed certificates)
+      rejectUnauthorized: false,
+      minVersion: 'TLSv1.2'
+    };
+  } else {
+    // For secure port (465), add TLS options
+    transportConfig.tls = {
+      rejectUnauthorized: false,
+      minVersion: 'TLSv1.2'
+    };
+  }
+
+  const transporter = nodemailer.createTransport(transportConfig);
 
   return { transporter, settings };
 }
