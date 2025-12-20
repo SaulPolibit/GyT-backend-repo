@@ -38,10 +38,10 @@ router.post('/register', authenticate, catchAsync(async (req, res) => {
   }
 
   // Validate role value
-  if (role !== 0 && role !== 1 && role !== 2 && role !== 3) {
+  if (role !== 0 && role !== 1 && role !== 2 && role !== 3 && role !== 4) {
     return res.status(400).json({
       success: false,
-      message: 'Invalid role. Must be 0 (root), 1 (admin), 2 (support), or 3 (investor)'
+      message: 'Invalid role. Must be 0 (root), 1 (admin), 2 (support), 3 (investor), or 4 (guest)'
     });
   }
 
