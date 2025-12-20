@@ -207,14 +207,15 @@ router.get('/', authenticate, requireInvestmentManagerAccess, catchAsync(async (
 
       // Check for free DocusealSubmissions (submissions not in payments)
       let hasFreeDocusealSubmission = false;
-      if (investor.userId) {
-        // Get all DocusealSubmissions for this userId
-        const docusealSubmissions = await DocusealSubmission.find({ userId: investor.userId });
+      if (investor.userId && user) {
+        // Get all DocusealSubmissions by user email
+        const docusealSubmissions = await DocusealSubmission.findByEmail(user.email);
 
         if (docusealSubmissions && docusealSubmissions.length > 0) {
           // Check if any DocusealSubmission is not in payments
+          // Note: payment.submissionId stores the Supabase UUID (docuseal_submissions.id)
           hasFreeDocusealSubmission = docusealSubmissions.some(
-            submission => !paymentSubmissionIds.has(submission.submissionId)
+            submission => !paymentSubmissionIds.has(submission.id) // Use submission.id, not submission.submissionId
           );
         }
       }
