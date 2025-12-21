@@ -8,6 +8,7 @@ const { catchAsync, validate } = require('../middleware/errorHandler');
 const { handleDocumentUpload } = require('../middleware/upload');
 const { uploadToSupabase } = require('../utils/fileUpload');
 const Payment = require('../models/supabase/payment');
+const { requireInvestmentManagerAccess, getUserContext } = require('../middleware/rbac');
 
 const router = express.Router();
 
@@ -394,6 +395,67 @@ router.delete('/:id', authenticate, catchAsync(async (req, res) => {
   res.status(200).json({
     success: true,
     message: 'Payment deleted successfully'
+  });
+}));
+
+/**
+ * @route   GET /api/payments/approvals/stats
+ * @desc    Get payment statistics for approval workflow
+ * @access  Private (requires authentication, Root/Admin only)
+ */
+router.get('/approvals/stats', authenticate, requireInvestmentManagerAccess, catchAsync(async (req, res) => {
+  const stats = await Payment.getStats();
+
+  res.status(200).json({
+    success: true,
+    data: stats
+  });
+}));
+
+/**
+ * @route   PATCH /api/payments/:id/approve
+ * @desc    Approve a payment
+ * @access  Private (requires authentication, Root/Admin only)
+ */
+router.patch('/:id/approve', authenticate, requireInvestmentManagerAccess, catchAsync(async (req, res) => {
+  const { userId } = getUserContext(req);
+  const { id } = req.params;
+  const { adminNotes } = req.body;
+
+  const payment = await Payment.findById(id);
+  validate(payment, 'Payment not found');
+  validate(payment.status === 'pending', 'Payment has already been processed');
+
+  const approvedPayment = await Payment.approve(id, userId, adminNotes);
+
+  res.status(200).json({
+    success: true,
+    message: 'Payment approved successfully',
+    data: approvedPayment
+  });
+}));
+
+/**
+ * @route   PATCH /api/payments/:id/reject
+ * @desc    Reject a payment
+ * @access  Private (requires authentication, Root/Admin only)
+ */
+router.patch('/:id/reject', authenticate, requireInvestmentManagerAccess, catchAsync(async (req, res) => {
+  const { userId } = getUserContext(req);
+  const { id } = req.params;
+  const { adminNotes } = req.body;
+
+  const payment = await Payment.findById(id);
+  validate(payment, 'Payment not found');
+  validate(payment.status === 'pending', 'Payment has already been processed');
+  validate(adminNotes, 'Admin notes are required when rejecting a payment');
+
+  const rejectedPayment = await Payment.reject(id, userId, adminNotes);
+
+  res.status(200).json({
+    success: true,
+    message: 'Payment rejected successfully',
+    data: rejectedPayment
   });
 }));
 
