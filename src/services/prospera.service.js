@@ -149,9 +149,10 @@ class ProsperapOAuthService {
    * @param {string} code - Authorization code from OAuth callback
    * @param {string} codeVerifier - PKCE code verifier
    * @param {string} nonce - Nonce for ID token validation
+   * @param {string} redirectUri - The same redirect URI used in the authorization request
    * @returns {Object} { accessToken, refreshToken, expiresAt, user }
    */
-  async exchangeCode(code, codeVerifier, nonce) {
+  async exchangeCode(code, codeVerifier, nonce, redirectUri) {
     if (!this.isInitialized || !this.client) {
       throw new Error('Prospera OAuth client not initialized. Call initialize() first.');
     }
@@ -159,9 +160,13 @@ class ProsperapOAuthService {
     try {
       console.log('[Prospera OAuth] Exchanging authorization code for tokens...');
 
+      // Use the provided redirectUri or fallback to LP Portal login
+      const callbackUri = redirectUri || `${process.env.FRONTEND_URL}/lp-portal/login`;
+      console.log('[Prospera OAuth] Using redirect URI for callback:', callbackUri);
+
       // Exchange code for tokens
       const tokenSet = await this.client.callback(
-        `${process.env.FRONTEND_URL}/lp-portal/login`,
+        callbackUri,
         { code },
         { code_verifier: codeVerifier, nonce: nonce }
       );

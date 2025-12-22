@@ -898,12 +898,16 @@ router.post('/prospera/auth-url', catchAsync(async (req, res) => {
  * }
  */
 router.post('/prospera/callback', catchAsync(async (req, res) => {
-  const { code, codeVerifier, nonce } = req.body;
+  // Ensure body is parsed (for Vercel compatibility)
+  await ensureBodyParsed(req);
+
+  const { code, codeVerifier, nonce, redirectUri } = req.body;
 
   // Validate required fields
   validate({ code, codeVerifier, nonce }, 'code, codeVerifier, and nonce are required');
 
   console.log('[Prospera Callback] Exchanging authorization code...');
+  console.log('[Prospera Callback] Redirect URI:', redirectUri);
 
   // Ensure Prospera is initialized (lazy initialization)
   try {
@@ -918,7 +922,8 @@ router.post('/prospera/callback', catchAsync(async (req, res) => {
   }
 
   // Exchange code for tokens and user info
-  const prosperapData = await prospera.exchangeCode(code, codeVerifier, nonce);
+  // Must use the same redirectUri that was used in the auth request
+  const prosperapData = await prospera.exchangeCode(code, codeVerifier, nonce, redirectUri);
 
   console.log('[Prospera Callback] ✓ Token exchange successful');
   console.log('[Prospera Callback] User email:', prosperapData.user.email);
@@ -1244,16 +1249,21 @@ router.post('/prospera/complete-registration', catchAsync(async (req, res) => {
  * @access  Private (requires auth token)
  */
 router.post('/prospera/link-wallet', authenticate, catchAsync(async (req, res) => {
-  const { code, codeVerifier, nonce } = req.body;
+  // Ensure body is parsed (for Vercel compatibility)
+  await ensureBodyParsed(req);
+
+  const { code, codeVerifier, nonce, redirectUri } = req.body;
 
   // Validate required fields
   validate({ code, codeVerifier, nonce }, 'code, codeVerifier, and nonce are required');
 
   console.log('[Prospera Link Wallet] Starting wallet link process for user:', req.user.email);
+  console.log('[Prospera Link Wallet] Redirect URI:', redirectUri);
 
   try {
     // Exchange authorization code for tokens
-    const prosperapData = await prospera.exchangeCode(code, codeVerifier, nonce);
+    // Must use the same redirectUri that was used in the auth request
+    const prosperapData = await prospera.exchangeCode(code, codeVerifier, nonce, redirectUri);
 
     console.log('[Prospera Link Wallet] ✓ OAuth tokens obtained');
 
