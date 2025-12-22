@@ -8,6 +8,7 @@ const { catchAsync, validate } = require('../middleware/errorHandler');
 const { handleDocumentUpload } = require('../middleware/upload');
 const { uploadToSupabase } = require('../utils/fileUpload');
 const Payment = require('../models/supabase/payment');
+const { Structure } = require('../models/supabase');
 const { requireInvestmentManagerAccess, getUserContext } = require('../middleware/rbac');
 
 const router = express.Router();
@@ -24,6 +25,51 @@ router.get('/health', (_req, res) => {
     timestamp: new Date().toISOString()
   });
 });
+
+/**
+ * @route   GET /api/payments/me
+ * @desc    Get all payments for the authenticated user with structure details
+ * @access  Private (requires authentication)
+ */
+router.get('/me', authenticate, catchAsync(async (req, res) => {
+  const userId = req.auth.userId || req.user.id;
+
+  // Get all payments for the current user
+  const payments = await Payment.find({ userId });
+
+  // Attach structure details to each payment
+  const paymentsWithStructures = await Promise.all(
+    payments.map(async (payment) => {
+      let structure = null;
+
+      if (payment.structureId) {
+        try {
+          structure = await Structure.findById(payment.structureId);
+        } catch (error) {
+          console.error(`Error fetching structure ${payment.structureId}:`, error.message);
+        }
+      }
+
+      return {
+        ...payment,
+        structure: structure ? {
+          id: structure.id,
+          name: structure.name,
+          type: structure.type,
+          status: structure.status,
+          baseCurrency: structure.baseCurrency,
+          description: structure.description,
+        } : null
+      };
+    })
+  );
+
+  res.status(200).json({
+    success: true,
+    count: paymentsWithStructures.length,
+    data: paymentsWithStructures
+  });
+}));
 
 /**
  * @route   POST /api/payments
