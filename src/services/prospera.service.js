@@ -225,11 +225,19 @@ class ProsperapOAuthService {
   /**
    * Verify if an RPN corresponds to an active Próspera resident
    * @param {string} rpn - Resident Permit Number
-   * @param {string} accessToken - OAuth access token
    * @returns {Object} { result: 'found_legal_entity' | 'found_natural_person' | 'not_found', active: boolean }
    */
-  async verifyRPN(rpn, accessToken) {
+  async verifyRPN(rpn) {
     try {
+      // Check for API key
+      const apiKey = process.env.EPROSPERA_API_KEY;
+      console.log('[Prospera OAuth] API Key present:', !!apiKey);
+      console.log('[Prospera OAuth] API Key starts with:', apiKey ? apiKey.substring(0, 10) + '...' : 'NOT SET');
+
+      if (!apiKey) {
+        throw new Error('EPROSPERA_API_KEY environment variable is not set');
+      }
+
       // Determine base URL based on environment (staging vs production)
       const issuerUrl = process.env.EPROSPERA_ISSUER_URL || 'https://staging-portal.eprospera.com';
       const baseUrl = issuerUrl.replace('staging-portal', 'staging-portal').replace('portal', 'portal');
@@ -241,7 +249,7 @@ class ProsperapOAuthService {
       const response = await fetch(apiUrl, {
         method: 'POST',
         headers: {
-          'Authorization': `Bearer ${accessToken}`,
+          'Authorization': `Bearer ${apiKey}`,
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({ rpn }),

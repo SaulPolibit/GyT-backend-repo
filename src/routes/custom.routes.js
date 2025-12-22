@@ -901,8 +901,8 @@ router.post('/prospera/callback', catchAsync(async (req, res) => {
 
     console.log('[Prospera Callback] RPN found, verifying residency status...');
 
-    // Verify RPN is active
-    const verification = await prospera.verifyRPN(rpn, prosperapData.accessToken);
+    // Verify RPN is active using API key from environment
+    const verification = await prospera.verifyRPN(rpn);
 
     // Check if user is an active resident
     const isActiveResident = verification.active === true &&
