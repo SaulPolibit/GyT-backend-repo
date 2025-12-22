@@ -1344,10 +1344,17 @@ router.post('/prospera/link-wallet', authenticate, catchAsync(async (req, res) =
 
   } catch (error) {
     console.error('[Prospera Link Wallet] Error:', error.message);
+    console.error('[Prospera Link Wallet] DEBUG - redirectUri received:', redirectUri);
+    console.error('[Prospera Link Wallet] DEBUG - FRONTEND_URL:', process.env.FRONTEND_URL);
     return res.status(500).json({
       success: false,
       message: 'Failed to link Próspera wallet',
-      error: error.message
+      error: error.message,
+      debug: {
+        redirectUriReceived: redirectUri,
+        frontendUrl: process.env.FRONTEND_URL,
+        expectedRedirectUri: `${process.env.FRONTEND_URL}/investment-manager/account`
+      }
     });
   }
 }));

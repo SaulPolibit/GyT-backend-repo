@@ -129,13 +129,19 @@ class ProsperapOAuthService {
     // Add redirect_uri if specified (required when multiple URIs are registered)
     if (redirectUri) {
       authOptions.redirect_uri = redirectUri;
-      console.log('[Prospera OAuth] Using redirect URI:', redirectUri);
     }
+
+    console.log('[Prospera OAuth] ==========================================');
+    console.log('[Prospera OAuth] AUTH URL GENERATION - Redirect URI Debug:');
+    console.log('[Prospera OAuth] - Provided redirectUri:', redirectUri);
+    console.log('[Prospera OAuth] - Final authOptions.redirect_uri:', authOptions.redirect_uri);
+    console.log('[Prospera OAuth] - Client redirect_uris:', this.client.redirect_uris);
+    console.log('[Prospera OAuth] ==========================================');
 
     // Generate authorization URL
     const authUrl = this.client.authorizationUrl(authOptions);
 
-    console.log('[Prospera OAuth] Generated auth URL');
+    console.log('[Prospera OAuth] Generated auth URL (first 200 chars):', authUrl.substring(0, 200));
 
     return {
       authUrl,
@@ -162,7 +168,12 @@ class ProsperapOAuthService {
 
       // Use the provided redirectUri or fallback to LP Portal login
       const callbackUri = redirectUri || `${process.env.FRONTEND_URL}/lp-portal/login`;
-      console.log('[Prospera OAuth] Using redirect URI for callback:', callbackUri);
+      console.log('[Prospera OAuth] ==========================================');
+      console.log('[Prospera OAuth] TOKEN EXCHANGE - Redirect URI Debug:');
+      console.log('[Prospera OAuth] - Provided redirectUri:', redirectUri);
+      console.log('[Prospera OAuth] - Using callbackUri:', callbackUri);
+      console.log('[Prospera OAuth] - FRONTEND_URL env:', process.env.FRONTEND_URL);
+      console.log('[Prospera OAuth] ==========================================');
 
       // Exchange code for tokens
       const tokenSet = await this.client.callback(
