@@ -1826,10 +1826,12 @@ router.post('/contract/mint-tokens', authenticate, catchAsync(async (req, res) =
 
   validate(contractAddress, 'Contract address is required');
   validate(userAddress, 'User address is required');
-  validate(amount !== undefined && amount !== null, 'Amount is required');
+  validate(amount !== undefined && amount !== null && amount !== '', 'Amount is required');
 
-  // Validate amount is a positive number
-  if (typeof amount !== 'number' || amount <= 0) {
+  // Parse and validate amount is a positive number
+  const parsedAmount = typeof amount === 'string' ? parseFloat(amount) : amount;
+
+  if (isNaN(parsedAmount) || parsedAmount <= 0) {
     return res.status(400).json({
       success: false,
       error: 'Invalid amount',
@@ -1917,7 +1919,7 @@ router.post('/contract/mint-tokens', authenticate, catchAsync(async (req, res) =
       gas: 300000,
       gasPrice: gasPrice,
       nonce: nonce,
-      data: contract.methods.mint(userAddress, amount).encodeABI(),
+      data: contract.methods.mint(userAddress, parsedAmount).encodeABI(),
       chainId: parseInt(process.env.CHAIN_ID || '80002') // Chain ID from env
     };
 
@@ -1932,7 +1934,7 @@ router.post('/contract/mint-tokens', authenticate, catchAsync(async (req, res) =
         transactionHash: receipt.transactionHash,
         contractAddress: contractAddress.toLowerCase(),
         userAddress: userAddress.toLowerCase(),
-        amount: amount.toString(),
+        amount: parsedAmount.toString(),
         blockNumber: receipt.blockNumber.toString(),
         gasUsed: receipt.gasUsed.toString(),
         network: process.env.NETWORK_NAME || 'Polygon Amoy'
