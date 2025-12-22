@@ -6,6 +6,7 @@ const express = require('express');
 const { authenticate } = require('../middleware/auth');
 const { catchAsync, validate } = require('../middleware/errorHandler');
 const { Structure, StructureAdmin, User } = require('../models/supabase');
+const SmartContract = require('../models/supabase/smartContract');
 const {
   requireInvestmentManagerAccess,
   getUserContext,
@@ -18,6 +19,42 @@ const { handleStructureBannerUpload } = require('../middleware/upload');
 const { uploadToSupabase } = require('../utils/fileUpload');
 
 const router = express.Router();
+
+/**
+ * Helper function to enrich structure with smart contract data
+ * @param {Object} structure - Structure object
+ * @returns {Promise<Object>} Structure with smart contract data
+ */
+async function enrichStructureWithSmartContract(structure) {
+  if (!structure) return structure;
+
+  try {
+    const smartContract = await SmartContract.findOne({ structureId: structure.id });
+    return {
+      ...structure,
+      smartContract: smartContract || null
+    };
+  } catch (error) {
+    console.error(`Error fetching smart contract for structure ${structure.id}:`, error.message);
+    return {
+      ...structure,
+      smartContract: null
+    };
+  }
+}
+
+/**
+ * Helper function to enrich multiple structures with smart contract data
+ * @param {Array} structures - Array of structure objects
+ * @returns {Promise<Array>} Structures with smart contract data
+ */
+async function enrichStructuresWithSmartContracts(structures) {
+  if (!structures || !Array.isArray(structures)) return structures;
+
+  return Promise.all(
+    structures.map(structure => enrichStructureWithSmartContract(structure))
+  );
+}
 
 /**
  * @route   POST /api/structures
@@ -280,10 +317,13 @@ router.post('/', authenticate, requireInvestmentManagerAccess, handleStructureBa
 
   const structure = await Structure.create(structureData);
 
+  // Enrich with smart contract data
+  const enrichedStructure = await enrichStructureWithSmartContract(structure);
+
   res.status(201).json({
     success: true,
     message: 'Structure created successfully',
-    data: structure
+    data: enrichedStructure
   });
 }));
 
@@ -309,10 +349,13 @@ router.get('/', authenticate, catchAsync(async (req, res) => {
   // Get structures with filters
   const structures = await Structure.find(filter);
 
+  // Enrich with smart contract data
+  const enrichedStructures = await enrichStructuresWithSmartContracts(structures);
+
   res.status(200).json({
     success: true,
-    count: structures.length,
-    data: structures
+    count: enrichedStructures.length,
+    data: enrichedStructures
   });
 }));
 
@@ -335,10 +378,13 @@ router.get('/root', authenticate, requireInvestmentManagerAccess, catchAsync(asy
     structures = await Structure.findRootStructures(userId);
   }
 
+  // Enrich with smart contract data
+  const enrichedStructures = await enrichStructuresWithSmartContracts(structures);
+
   res.status(200).json({
     success: true,
-    count: structures.length,
-    data: structures
+    count: enrichedStructures.length,
+    data: enrichedStructures
   });
 }));
 
@@ -353,9 +399,12 @@ router.get('/:id', authenticate, catchAsync(async (req, res) => {
   const structure = await Structure.findById(id);
   validate(structure, 'Structure not found');
 
+  // Enrich with smart contract data
+  const enrichedStructure = await enrichStructureWithSmartContract(structure);
+
   res.status(200).json({
     success: true,
-    data: structure
+    data: enrichedStructure
   });
 }));
 
@@ -378,10 +427,13 @@ router.get('/:id/children', authenticate, requireInvestmentManagerAccess, catchA
 
   const children = await Structure.findChildStructures(id);
 
+  // Enrich with smart contract data
+  const enrichedChildren = await enrichStructuresWithSmartContracts(children);
+
   res.status(200).json({
     success: true,
-    count: children.length,
-    data: children
+    count: enrichedChildren.length,
+    data: enrichedChildren
   });
 }));
 
@@ -410,9 +462,12 @@ router.get('/:id/with-investors', authenticate, catchAsync(async (req, res) => {
 
   const structureWithInvestors = await Structure.findWithInvestors(id);
 
+  // Enrich with smart contract data
+  const enrichedStructure = await enrichStructureWithSmartContract(structureWithInvestors);
+
   res.status(200).json({
     success: true,
-    data: structureWithInvestors
+    data: enrichedStructure
   });
 }));
 
@@ -499,10 +554,13 @@ router.put('/:id', authenticate, requireInvestmentManagerAccess, handleStructure
     updatedStructure = structure;
   }
 
+  // Enrich with smart contract data
+  const enrichedStructure = await enrichStructureWithSmartContract(updatedStructure);
+
   res.status(200).json({
     success: true,
     message: 'Structure updated successfully',
-    data: updatedStructure
+    data: enrichedStructure
   });
 }));
 
@@ -533,10 +591,13 @@ router.patch('/:id/financials', authenticate, requireInvestmentManagerAccess, ca
 
   const updatedStructure = await Structure.updateFinancials(id, financials);
 
+  // Enrich with smart contract data
+  const enrichedStructure = await enrichStructureWithSmartContract(updatedStructure);
+
   res.status(200).json({
     success: true,
     message: 'Structure financials updated successfully',
-    data: updatedStructure
+    data: enrichedStructure
   });
 }));
 
