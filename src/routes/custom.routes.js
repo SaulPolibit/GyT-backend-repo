@@ -878,6 +878,69 @@ router.post('/prospera/callback', catchAsync(async (req, res) => {
   console.log('[Prospera Callback] ✓ Token exchange successful');
   console.log('[Prospera Callback] User email:', prosperapData.user.email);
 
+  // Verify user is an active Próspera resident
+  try {
+    console.log('[Prospera Callback] Fetching user profile to get RPN...');
+
+    // Get user's Próspera profile including RPN
+    const userProfile = await prospera.getUserProfile(prosperapData.accessToken);
+
+    // Extract RPN from profile (field name may vary - adjust based on actual API response)
+    const rpn = userProfile.rpn || userProfile.resident_permit_number || userProfile.residentPermitNumber;
+
+    if (!rpn) {
+      console.warn('[Prospera Callback] No RPN found in user profile');
+      return res.status(403).json({
+        success: false,
+        message: 'Access restricted to Próspera residents only',
+        redirectUrl: process.env.EPROSPERA_ISSUER_URL === 'https://portal.eprospera.com'
+          ? 'https://portal.eprospera.com/en/login?returnTo=%2F'
+          : 'https://staging-portal.eprospera.com/en/login?returnTo=%2F'
+      });
+    }
+
+    console.log('[Prospera Callback] RPN found, verifying residency status...');
+
+    // Verify RPN is active
+    const verification = await prospera.verifyRPN(rpn, prosperapData.accessToken);
+
+    // Check if user is an active resident
+    const isActiveResident = verification.active === true &&
+                             (verification.result === 'found_natural_person' ||
+                              verification.result === 'found_legal_entity');
+
+    if (!isActiveResident) {
+      console.log('[Prospera Callback] User is not an active Próspera resident');
+      console.log('[Prospera Callback] Verification result:', verification);
+
+      return res.status(403).json({
+        success: false,
+        message: 'Access restricted to active Próspera residents only. Please ensure your Próspera residency is active.',
+        redirectUrl: process.env.EPROSPERA_ISSUER_URL === 'https://portal.eprospera.com'
+          ? 'https://portal.eprospera.com/en/login?returnTo=%2F'
+          : 'https://staging-portal.eprospera.com/en/login?returnTo=%2F',
+        details: {
+          result: verification.result,
+          active: verification.active
+        }
+      });
+    }
+
+    console.log('[Prospera Callback] ✓ User verified as active Próspera resident');
+  } catch (verificationError) {
+    console.error('[Prospera Callback] RPN verification failed:', verificationError.message);
+
+    // Strict mode: Block login on any verification error
+    return res.status(500).json({
+      success: false,
+      message: 'Unable to verify Próspera residency status. Please try again later or contact support.',
+      error: verificationError.message,
+      redirectUrl: process.env.EPROSPERA_ISSUER_URL === 'https://portal.eprospera.com'
+        ? 'https://portal.eprospera.com/en/login?returnTo=%2F'
+        : 'https://staging-portal.eprospera.com/en/login?returnTo=%2F'
+    });
+  }
+
   // Check if user exists by email or Prospera ID
   let user = await User.findOne({ email: prosperapData.user.email });
 

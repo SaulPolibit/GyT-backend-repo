@@ -185,6 +185,85 @@ class ProsperapOAuthService {
   }
 
   /**
+   * Get user's Próspera profile including RPN
+   * @param {string} accessToken - OAuth access token
+   * @returns {Object} User profile data including RPN
+   */
+  async getUserProfile(accessToken) {
+    try {
+      // Determine base URL based on environment (staging vs production)
+      const issuerUrl = process.env.EPROSPERA_ISSUER_URL || 'https://staging-portal.eprospera.com';
+      const baseUrl = issuerUrl.replace('staging-portal', 'staging-portal').replace('portal', 'portal');
+      const apiUrl = `${baseUrl}/api/v1/me/natural-person`;
+
+      console.log('[Prospera OAuth] Fetching user profile from:', apiUrl);
+
+      const response = await fetch(apiUrl, {
+        method: 'GET',
+        headers: {
+          'Authorization': `Bearer ${accessToken}`,
+          'Content-Type': 'application/json',
+        },
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error('[Prospera OAuth] Failed to fetch user profile:', response.status, errorText);
+        throw new Error(`Failed to fetch user profile: ${response.status} ${errorText}`);
+      }
+
+      const profileData = await response.json();
+      console.log('[Prospera OAuth] ✓ User profile retrieved');
+
+      return profileData;
+    } catch (error) {
+      console.error('[Prospera OAuth] Error fetching user profile:', error.message);
+      throw new Error(`Failed to get user profile from Próspera: ${error.message}`);
+    }
+  }
+
+  /**
+   * Verify if an RPN corresponds to an active Próspera resident
+   * @param {string} rpn - Resident Permit Number
+   * @param {string} accessToken - OAuth access token
+   * @returns {Object} { result: 'found_legal_entity' | 'found_natural_person' | 'not_found', active: boolean }
+   */
+  async verifyRPN(rpn, accessToken) {
+    try {
+      // Determine base URL based on environment (staging vs production)
+      const issuerUrl = process.env.EPROSPERA_ISSUER_URL || 'https://staging-portal.eprospera.com';
+      const baseUrl = issuerUrl.replace('staging-portal', 'staging-portal').replace('portal', 'portal');
+      const apiUrl = `${baseUrl}/api/v1/verify_rpn`;
+
+      console.log('[Prospera OAuth] Verifying RPN:', rpn);
+      console.log('[Prospera OAuth] Using API URL:', apiUrl);
+
+      const response = await fetch(apiUrl, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${accessToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ rpn }),
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error('[Prospera OAuth] RPN verification failed:', response.status, errorText);
+        throw new Error(`Failed to verify RPN: ${response.status} ${errorText}`);
+      }
+
+      const verificationData = await response.json();
+      console.log('[Prospera OAuth] ✓ RPN verification result:', verificationData);
+
+      return verificationData;
+    } catch (error) {
+      console.error('[Prospera OAuth] Error verifying RPN:', error.message);
+      throw new Error(`Failed to verify RPN with Próspera: ${error.message}`);
+    }
+  }
+
+  /**
    * Check if the service is ready to use
    * @returns {boolean}
    */
