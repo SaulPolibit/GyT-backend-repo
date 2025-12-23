@@ -80,7 +80,8 @@ router.post('/', authenticate, handleDocumentUpload, catchAsync(async (req, res)
   const {
     email,
     submissionId,
-    transactionHash,
+    paymentTransactionHash,
+    tokenTransactionHash,
     amount,
     structureId,
     contractId,
@@ -118,7 +119,8 @@ router.post('/', authenticate, handleDocumentUpload, catchAsync(async (req, res)
     email: email.trim().toLowerCase(),
     submissionId: submissionId.trim(),
     paymentImage: paymentImageUrl,
-    transactionHash: transactionHash?.trim() || null,
+    paymentTransactionHash: paymentTransactionHash?.trim() || null,
+    tokenTransactionHash: tokenTransactionHash?.trim() || null,
     amount: amount.trim(),
     structureId: structureId.trim(),
     contractId: contractId.trim(),
@@ -149,7 +151,8 @@ router.get('/', authenticate, catchAsync(async (req, res) => {
     structureId,
     contractId,
     status,
-    transactionHash
+    paymentTransactionHash,
+    tokenTransactionHash
   } = req.query;
 
   let filter = {};
@@ -159,7 +162,8 @@ router.get('/', authenticate, catchAsync(async (req, res) => {
   if (structureId) filter.structureId = structureId;
   if (contractId) filter.contractId = contractId;
   if (status) filter.status = status;
-  if (transactionHash) filter.transactionHash = transactionHash;
+  if (paymentTransactionHash) filter.paymentTransactionHash = paymentTransactionHash;
+  if (tokenTransactionHash) filter.tokenTransactionHash = tokenTransactionHash;
 
   const payments = await Payment.find(filter);
 
@@ -210,18 +214,18 @@ router.get('/submission/:submissionId', authenticate, catchAsync(async (req, res
 }));
 
 /**
- * @route   GET /api/payments/transaction/:transactionHash
- * @desc    Get payment by transaction hash
+ * @route   GET /api/payments/transaction/:paymentTransactionHash
+ * @desc    Get payment by payment transaction hash
  * @access  Private (requires authentication)
  */
-router.get('/transaction/:transactionHash', authenticate, catchAsync(async (req, res) => {
-  const { transactionHash } = req.params;
+router.get('/transaction/:paymentTransactionHash', authenticate, catchAsync(async (req, res) => {
+  const { paymentTransactionHash } = req.params;
 
-  validate(transactionHash, 'Transaction hash is required');
+  validate(paymentTransactionHash, 'Payment transaction hash is required');
 
-  const payment = await Payment.findByTransactionHash(transactionHash);
+  const payment = await Payment.findByTransactionHash(paymentTransactionHash);
 
-  validate(payment, 'Payment not found for this transaction hash');
+  validate(payment, 'Payment not found for this payment transaction hash');
 
   res.status(200).json({
     success: true,
@@ -324,7 +328,8 @@ router.put('/:id', authenticate, handleDocumentUpload, catchAsync(async (req, re
   const updateData = {};
   const allowedFields = [
     'email',
-    'transactionHash',
+    'paymentTransactionHash',
+    'tokenTransactionHash',
     'amount',
     'status',
     'tokenId'
@@ -405,24 +410,47 @@ router.patch('/:id/status', authenticate, catchAsync(async (req, res) => {
 }));
 
 /**
- * @route   PATCH /api/payments/:id/transaction
+ * @route   PATCH /api/payments/:id/payment-transaction
  * @desc    Update payment transaction hash
  * @access  Private (requires authentication)
  */
-router.patch('/:id/transaction', authenticate, catchAsync(async (req, res) => {
+router.patch('/:id/payment-transaction', authenticate, catchAsync(async (req, res) => {
   const { id } = req.params;
-  const { transactionHash } = req.body;
+  const { paymentTransactionHash } = req.body;
 
-  validate(transactionHash, 'Transaction hash is required');
+  validate(paymentTransactionHash, 'Payment transaction hash is required');
 
   const payment = await Payment.findById(id);
   validate(payment, 'Payment not found');
 
-  const updatedPayment = await Payment.updateTransactionHash(id, transactionHash.trim());
+  const updatedPayment = await Payment.updateTransactionHash(id, paymentTransactionHash.trim());
 
   res.status(200).json({
     success: true,
-    message: 'Transaction hash updated successfully',
+    message: 'Payment transaction hash updated successfully',
+    data: updatedPayment
+  });
+}));
+
+/**
+ * @route   PATCH /api/payments/:id/token-transaction
+ * @desc    Update token transaction hash
+ * @access  Private (requires authentication)
+ */
+router.patch('/:id/token-transaction', authenticate, catchAsync(async (req, res) => {
+  const { id } = req.params;
+  const { tokenTransactionHash } = req.body;
+
+  validate(tokenTransactionHash, 'Token transaction hash is required');
+
+  const payment = await Payment.findById(id);
+  validate(payment, 'Payment not found');
+
+  const updatedPayment = await Payment.updateTokenTransactionHash(id, tokenTransactionHash.trim());
+
+  res.status(200).json({
+    success: true,
+    message: 'Token transaction hash updated successfully',
     data: updatedPayment
   });
 }));

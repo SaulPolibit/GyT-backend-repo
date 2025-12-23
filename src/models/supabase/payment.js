@@ -16,7 +16,8 @@ class Payment {
       email: 'email',
       submissionId: 'submission_id',
       paymentImage: 'payment_image',
-      transactionHash: 'transaction_hash',
+      paymentTransactionHash: 'payment_transaction_hash',
+      tokenTransactionHash: 'token_transaction_hash',
       amount: 'amount',
       structureId: 'structure_id',
       contractId: 'contract_id',
@@ -58,7 +59,8 @@ class Payment {
       email: dbData.email,
       submissionId: dbData.submission_id,
       paymentImage: dbData.payment_image,
-      transactionHash: dbData.transaction_hash,
+      paymentTransactionHash: dbData.payment_transaction_hash,
+      tokenTransactionHash: dbData.token_transaction_hash,
       amount: parseFloat(dbData.amount) || 0,
       structureId: dbData.structure_id,
       contractId: dbData.contract_id,
@@ -146,17 +148,17 @@ class Payment {
   }
 
   /**
-   * Find payment by transaction hash
-   * @param {string} transactionHash - Transaction hash
+   * Find payment by payment transaction hash
+   * @param {string} paymentTransactionHash - Payment transaction hash
    * @returns {Promise<Object|null>} Payment or null
    */
-  static async findByTransactionHash(transactionHash) {
+  static async findByTransactionHash(paymentTransactionHash) {
     const supabase = getSupabase();
 
     const { data, error } = await supabase
       .from('payments')
       .select('*')
-      .eq('transaction_hash', transactionHash)
+      .eq('payment_transaction_hash', paymentTransactionHash)
       .single();
 
     if (error) {
@@ -320,13 +322,23 @@ class Payment {
   }
 
   /**
-   * Update transaction hash
+   * Update payment transaction hash
    * @param {string} id - Payment ID
-   * @param {string} transactionHash - Transaction hash
+   * @param {string} paymentTransactionHash - Payment transaction hash
    * @returns {Promise<Object>} Updated payment
    */
-  static async updateTransactionHash(id, transactionHash) {
-    return this.findByIdAndUpdate(id, { transactionHash });
+  static async updateTransactionHash(id, paymentTransactionHash) {
+    return this.findByIdAndUpdate(id, { paymentTransactionHash });
+  }
+
+  /**
+   * Update token transaction hash
+   * @param {string} id - Payment ID
+   * @param {string} tokenTransactionHash - Token transaction hash
+   * @returns {Promise<Object>} Updated payment
+   */
+  static async updateTokenTransactionHash(id, tokenTransactionHash) {
+    return this.findByIdAndUpdate(id, { tokenTransactionHash });
   }
 
   /**
