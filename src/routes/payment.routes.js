@@ -88,6 +88,7 @@ router.post('/', authenticate, handleDocumentUpload, catchAsync(async (req, res)
     status,
     tokenId,
     tokens,
+    paymentMethod,
     walletAddress
   } = req.body;
 
@@ -128,6 +129,7 @@ router.post('/', authenticate, handleDocumentUpload, catchAsync(async (req, res)
     status: status?.trim() || 'pending',
     tokenId: tokenId?.trim() || null,
     tokens: tokens ? parseInt(tokens, 10) : null,
+    paymentMethod: paymentMethod?.trim() || null,
     walletAddress: walletAddress?.trim() || null,
     userId: userId
   };
@@ -378,7 +380,8 @@ router.put('/:id', authenticate, handleDocumentUpload, catchAsync(async (req, re
     'amount',
     'status',
     'tokenId',
-    'tokens'
+    'tokens',
+    'paymentMethod'
   ];
 
   // Update allowed fields
