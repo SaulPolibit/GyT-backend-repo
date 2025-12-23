@@ -81,7 +81,7 @@ router.post('/', authenticate, handleDocumentUpload, catchAsync(async (req, res)
     email,
     submissionId,
     paymentTransactionHash,
-    tokenTransactionHash,
+    mintTransactionHash,
     amount,
     structureId,
     contractId,
@@ -120,7 +120,7 @@ router.post('/', authenticate, handleDocumentUpload, catchAsync(async (req, res)
     submissionId: submissionId.trim(),
     paymentImage: paymentImageUrl,
     paymentTransactionHash: paymentTransactionHash?.trim() || null,
-    tokenTransactionHash: tokenTransactionHash?.trim() || null,
+    mintTransactionHash: mintTransactionHash?.trim() || null,
     amount: amount.trim(),
     structureId: structureId.trim(),
     contractId: contractId.trim(),
@@ -152,7 +152,7 @@ router.get('/', authenticate, catchAsync(async (req, res) => {
     contractId,
     status,
     paymentTransactionHash,
-    tokenTransactionHash
+    mintTransactionHash
   } = req.query;
 
   let filter = {};
@@ -163,7 +163,7 @@ router.get('/', authenticate, catchAsync(async (req, res) => {
   if (contractId) filter.contractId = contractId;
   if (status) filter.status = status;
   if (paymentTransactionHash) filter.paymentTransactionHash = paymentTransactionHash;
-  if (tokenTransactionHash) filter.tokenTransactionHash = tokenTransactionHash;
+  if (mintTransactionHash) filter.mintTransactionHash = mintTransactionHash;
 
   const payments = await Payment.find(filter);
 
@@ -329,7 +329,7 @@ router.put('/:id', authenticate, handleDocumentUpload, catchAsync(async (req, re
   const allowedFields = [
     'email',
     'paymentTransactionHash',
-    'tokenTransactionHash',
+    'mintTransactionHash',
     'amount',
     'status',
     'tokenId'
@@ -439,14 +439,14 @@ router.patch('/:id/payment-transaction', authenticate, catchAsync(async (req, re
  */
 router.patch('/:id/token-transaction', authenticate, catchAsync(async (req, res) => {
   const { id } = req.params;
-  const { tokenTransactionHash } = req.body;
+  const { mintTransactionHash } = req.body;
 
-  validate(tokenTransactionHash, 'Token transaction hash is required');
+  validate(mintTransactionHash, 'Token transaction hash is required');
 
   const payment = await Payment.findById(id);
   validate(payment, 'Payment not found');
 
-  const updatedPayment = await Payment.updateTokenTransactionHash(id, tokenTransactionHash.trim());
+  const updatedPayment = await Payment.updateTokenTransactionHash(id, mintTransactionHash.trim());
 
   res.status(200).json({
     success: true,

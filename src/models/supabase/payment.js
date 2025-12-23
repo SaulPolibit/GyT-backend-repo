@@ -17,7 +17,7 @@ class Payment {
       submissionId: 'submission_id',
       paymentImage: 'payment_image',
       paymentTransactionHash: 'payment_transaction_hash',
-      tokenTransactionHash: 'token_transaction_hash',
+      mintTransactionHash: 'token_transaction_hash',
       amount: 'amount',
       structureId: 'structure_id',
       contractId: 'contract_id',
@@ -60,7 +60,7 @@ class Payment {
       submissionId: dbData.submission_id,
       paymentImage: dbData.payment_image,
       paymentTransactionHash: dbData.payment_transaction_hash,
-      tokenTransactionHash: dbData.token_transaction_hash,
+      mintTransactionHash: dbData.token_transaction_hash,
       amount: parseFloat(dbData.amount) || 0,
       structureId: dbData.structure_id,
       contractId: dbData.contract_id,
@@ -334,11 +334,11 @@ class Payment {
   /**
    * Update token transaction hash
    * @param {string} id - Payment ID
-   * @param {string} tokenTransactionHash - Token transaction hash
+   * @param {string} mintTransactionHash - Token transaction hash
    * @returns {Promise<Object>} Updated payment
    */
-  static async updateTokenTransactionHash(id, tokenTransactionHash) {
-    return this.findByIdAndUpdate(id, { tokenTransactionHash });
+  static async updateTokenTransactionHash(id, mintTransactionHash) {
+    return this.findByIdAndUpdate(id, { mintTransactionHash });
   }
 
   /**
