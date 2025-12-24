@@ -664,6 +664,59 @@ router.get('/filter', authenticate, catchAsync(async (req, res) => {
 }));
 
 /**
+ * @route   GET /api/users/:id
+ * @desc    Get single user by ID
+ * @access  Private (requires authentication, Root/Admin/Staff only)
+ * @params  id - User UUID to retrieve
+ */
+router.get('/:id', authenticate, catchAsync(async (req, res) => {
+  const { userRole } = getUserContext(req);
+  const { id } = req.params;
+
+  // Only ROOT, ADMIN, and STAFF roles can access this endpoint
+  if (userRole !== ROLES.ROOT && userRole !== ROLES.ADMIN && userRole !== ROLES.STAFF) {
+    return res.status(403).json({
+      success: false,
+      message: 'Unauthorized: Only Root, Admin, and Staff users can access user details'
+    });
+  }
+
+  validate(id, 'User ID is required');
+
+  // Find the user
+  const user = await User.findById(id);
+  if (!user) {
+    return res.status(404).json({
+      success: false,
+      message: 'User not found'
+    });
+  }
+
+  res.status(200).json({
+    success: true,
+    data: {
+      id: user.id,
+      email: user.email,
+      firstName: user.firstName,
+      lastName: user.lastName,
+      phoneNumber: user.phoneNumber,
+      appLanguage: user.appLanguage,
+      profileImage: user.profileImage,
+      role: user.role,
+      kycId: user.kycId,
+      kycStatus: user.kycStatus,
+      kycUrl: user.kycUrl,
+      address: user.address,
+      country: user.country,
+      isActive: user.isActive,
+      lastLogin: user.lastLogin,
+      createdAt: user.createdAt,
+      updatedAt: user.updatedAt
+    }
+  });
+}));
+
+/**
  * @route   DELETE /api/users/:id
  * @desc    Delete user by ID
  * @access  Private (requires authentication, Root only)
