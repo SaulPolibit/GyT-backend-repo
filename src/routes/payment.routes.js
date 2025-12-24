@@ -416,7 +416,7 @@ router.put('/:id', authenticate, handleDocumentUpload, catchAsync(async (req, re
 
   // Validate status if provided
   if (updateData.status) {
-    const validStatuses = ['pending', 'completed', 'failed', 'processing'];
+    const validStatuses = ['pending', 'completed', 'failed', 'processing', 'approved', 'rejected'];
     validate(
       validStatuses.includes(updateData.status),
       `Status must be one of: ${validStatuses.join(', ')}`
@@ -443,7 +443,7 @@ router.patch('/:id/status', authenticate, catchAsync(async (req, res) => {
 
   validate(status, 'Status is required');
 
-  const validStatuses = ['pending', 'completed', 'failed', 'processing'];
+  const validStatuses = ['pending', 'completed', 'failed', 'processing', 'approved', 'rejected'];
   validate(
     validStatuses.includes(status),
     `Status must be one of: ${validStatuses.join(', ')}`
