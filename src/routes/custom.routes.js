@@ -569,6 +569,170 @@ router.get('/mfa/factors', authenticate, catchAsync(async (req, res) => {
   });
 }));
 
+/**
+  * @route   POST /api/custom/mfa/challenge
+  * @desc    Create MFA challenge for current session (to achieve AAL2)
+  * @access  Private
+  * @body    {
+  *            supabaseAccessToken: string
+  *            supabaseRefreshToken: string
+  *            factorId?: string - Optional, will auto-retrieve if not provided
+  *          }
+  */
+ router.post('/mfa/challenge', authenticate, catchAsync(async (req, res) => {
+   const { id: userId } = req.user;
+   const {
+     factorId,
+     supabaseAccessToken: bodyAccessToken,
+     supabaseRefreshToken: bodyRefreshToken
+   } = req.body || {};
+
+   const supabaseAccessToken = bodyAccessToken || req.headers['x-supabase-access-token'];
+   const supabaseRefreshToken = bodyRefreshToken || req.headers['x-supabase-refresh-token'];
+
+   if (!supabaseAccessToken || !supabaseRefreshToken) {
+     return res.status(400).json({
+       success: false,
+       message: 'Supabase tokens are required'
+     });
+   }
+
+   let factorIdToUse = factorId;
+
+   // Auto-retrieve factorId if not provided
+   if (!factorIdToUse) {
+     const factors = await MFAFactor.findByUserId(userId, true);
+     if (factors.length === 0) {
+       return res.status(404).json({
+         success: false,
+         message: 'No active MFA factor found'
+       });
+     }
+     factorIdToUse = factors[0].factorId;
+   }
+
+   const supabase = getSupabase();
+
+   // Set session
+   const { error: sessionError } = await supabase.auth.setSession({
+     access_token: supabaseAccessToken,
+     refresh_token: supabaseRefreshToken
+   });
+
+   if (sessionError) {
+     return res.status(401).json({
+       success: false,
+       message: 'Invalid session'
+     });
+   }
+
+   // Create challenge
+   const { data, error } = await supabase.auth.mfa.challenge({
+     factorId: factorIdToUse
+   });
+
+   if (error) {
+     return res.status(400).json({
+       success: false,
+       message: 'Failed to create MFA challenge',
+       error: error.message
+     });
+   }
+
+  res.status(200).json({
+    success: true,
+    data: {
+      challengeId: data.id,
+      factorId: factorIdToUse,
+      expiresAt: data.expires_at
+    }
+  });
+}));
+
+/**
+ * @route   POST /api/custom/mfa/verify
+ * @desc    Verify MFA challenge to achieve AAL2
+ * @access  Private
+ * @body    {
+ *            supabaseAccessToken: string
+ *            supabaseRefreshToken: string
+ *            factorId: string
+ *            challengeId: string
+ *            code: string - 6-digit TOTP code
+ *          }
+ */
+router.post('/mfa/verify', authenticate, catchAsync(async (req, res) => {
+  const {
+    factorId,
+    challengeId,
+    code,
+    supabaseAccessToken: bodyAccessToken,
+    supabaseRefreshToken: bodyRefreshToken
+  } = req.body || {};
+
+   if (!factorId || !challengeId || !code) {
+     return res.status(400).json({
+       success: false,
+       message: 'factorId, challengeId, and code are required'
+     });
+   }
+
+  const supabaseAccessToken = bodyAccessToken || req.headers['x-supabase-access-token'];
+  const supabaseRefreshToken = bodyRefreshToken || req.headers['x-supabase-refresh-token'];
+
+  if (!supabaseAccessToken || !supabaseRefreshToken) {
+    return res.status(400).json({
+      success: false,
+      message: 'Supabase tokens are required'
+    });
+  }
+
+  const supabase = getSupabase();
+
+  // Set session
+  const { error: sessionError } = await supabase.auth.setSession({
+    access_token: supabaseAccessToken,
+    refresh_token: supabaseRefreshToken
+  });
+
+  if (sessionError) {
+    return res.status(401).json({
+      success: false,
+      message: 'Invalid session'
+    });
+  }
+
+  // Verify challenge
+  const { data, error } = await supabase.auth.mfa.verify({
+    factorId,
+    challengeId,
+    code
+  });
+
+  if (error) {
+    return res.status(400).json({
+      success: false,
+      message: 'Invalid verification code',
+      error: error.message
+    });
+  }
+
+  // Update last used
+  try {
+    await MFAFactor.updateLastUsed(factorId);
+  } catch (e) {
+    console.error('Failed to update MFA last used:', e);
+  }
+
+  res.status(200).json({
+    success: true,
+    message: 'MFA verified successfully - AAL2 achieved',
+    data: {
+      aal: 'aal2' // Authenticator Assurance Level 2
+    }
+  });
+}));
+
 // ===== DIDIT KYC API =====
 
 /**
