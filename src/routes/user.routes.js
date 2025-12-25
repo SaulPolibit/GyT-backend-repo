@@ -919,17 +919,52 @@ router.get('/:id', authenticate, catchAsync(async (req, res) => {
       email: user.email,
       firstName: user.firstName,
       lastName: user.lastName,
-      phoneNumber: user.phoneNumber,
       appLanguage: user.appLanguage,
       profileImage: user.profileImage,
       role: user.role,
+      isActive: user.isActive,
+      isEmailVerified: user.isEmailVerified,
+      phoneNumber: user.phoneNumber,
+      // KYC fields
       kycId: user.kycId,
       kycStatus: user.kycStatus,
       kycUrl: user.kycUrl,
+      // Address fields
       address: user.address,
-      walletAddress: user.walletAddress,
       country: user.country,
-      isActive: user.isActive,
+      addressLine1: user.addressLine1,
+      addressLine2: user.addressLine2,
+      city: user.city,
+      state: user.state,
+      postalCode: user.postalCode,
+      // Investor fields
+      investorType: user.investorType,
+      taxId: user.taxId,
+      accreditedInvestor: user.accreditedInvestor,
+      riskTolerance: user.riskTolerance,
+      investmentPreferences: user.investmentPreferences,
+      // Individual investor fields
+      fullName: user.fullName,
+      dateOfBirth: user.dateOfBirth,
+      nationality: user.nationality,
+      passportNumber: user.passportNumber,
+      // Institution investor fields
+      institutionName: user.institutionName,
+      institutionType: user.institutionType,
+      registrationNumber: user.registrationNumber,
+      legalRepresentative: user.legalRepresentative,
+      // Fund of Funds investor fields
+      fundName: user.fundName,
+      fundManager: user.fundManager,
+      aum: user.aum,
+      // Family Office investor fields
+      officeName: user.officeName,
+      familyName: user.familyName,
+      principalContact: user.principalContact,
+      assetsUnderManagement: user.assetsUnderManagement,
+      // Blockchain wallet
+      walletAddress: user.walletAddress,
+      // Timestamps
       lastLogin: user.lastLogin,
       createdAt: user.createdAt,
       updatedAt: user.updatedAt
