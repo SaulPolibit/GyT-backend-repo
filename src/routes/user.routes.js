@@ -809,7 +809,7 @@ router.delete('/profile-image', authenticate, catchAsync(async (req, res) => {
  * @desc    Upload user W9 form document
  * @access  Private (requires authentication)
  */
-router.post('/w9-form', authenticate, uploadDocument.single('w9Form'), catchAsync(async (req, res) => {
+router.post('/w9-form', authenticate, uploadDocument.single('file'), catchAsync(async (req, res) => {
   // Get user ID from authenticated token
   const userId = req.auth.userId || req.user.id;
 
