@@ -151,6 +151,145 @@ router.post('/login', catchAsync(async (req, res) => {
   });
 }));
 
+/**
+ * @route   POST /api/custom/mfa/login-verify
+ * @desc    Verify MFA code during login flow (public endpoint)
+ * @access  Public
+ * @body    {
+ *            userId: string - User ID from login response
+ *            code: string - 6-digit TOTP code from authenticator app
+ *          }
+ */
+router.post('/mfa/login-verify', catchAsync(async (req, res) => {
+  const { userId, code } = req.body;
+
+  // Validate required fields
+  if (!userId || !code) {
+    return res.status(400).json({
+      success: false,
+      message: 'User ID and verification code are required'
+    });
+  }
+
+  // Get user from database
+  const user = await User.findById(userId);
+  if (!user) {
+    return res.status(404).json({
+      success: false,
+      message: 'User not found'
+    });
+  }
+
+  // Check if user is active
+  if (!user.isActive) {
+    return res.status(403).json({
+      success: false,
+      message: 'Account has been deactivated'
+    });
+  }
+
+  // Check if user has MFA enabled
+  if (!user.mfaFactorId) {
+    return res.status(400).json({
+      success: false,
+      message: 'MFA is not enabled for this user'
+    });
+  }
+
+  const supabase = getSupabase();
+  const factorId = user.mfaFactorId;
+
+  try {
+    // Create MFA challenge
+    const { data: challengeData, error: challengeError } = await supabase.auth.mfa.challenge({
+      factorId
+    });
+
+    if (challengeError) {
+      console.error('MFA challenge error:', challengeError);
+      return res.status(400).json({
+        success: false,
+        message: 'Failed to create MFA challenge',
+        error: challengeError.message
+      });
+    }
+
+    // Verify the challenge with the code
+    const { data: verifyData, error: verifyError } = await supabase.auth.mfa.verify({
+      factorId,
+      challengeId: challengeData.id,
+      code
+    });
+
+    if (verifyError) {
+      console.error('MFA verification error:', verifyError);
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid verification code',
+        error: verifyError.message
+      });
+    }
+
+    // Update last used timestamp
+    try {
+      await MFAFactor.updateLastUsed(factorId);
+    } catch (updateError) {
+      console.error('Failed to update MFA last used:', updateError);
+      // Don't fail the request if this fails
+    }
+
+    // Update last login
+    const updatedUser = await User.findByIdAndUpdate(user.id, {
+      lastLogin: new Date()
+    });
+
+    // Create JWT token
+    const token = createToken({
+      id: user.id,
+      email: user.email,
+      role: user.role
+    });
+
+    // Return success response with token and user data (same as login)
+    res.status(200).json({
+      success: true,
+      message: 'MFA verification successful',
+      token,
+      expiresIn: '24h',
+      supabase: {
+        accessToken: verifyData.access_token,
+        refreshToken: verifyData.refresh_token,
+        expiresIn: verifyData.expires_in,
+        expiresAt: verifyData.expires_at
+      },
+      user: {
+        id: user.id,
+        email: user.email,
+        firstName: user.firstName,
+        lastName: user.lastName,
+        phoneNumber: user.phoneNumber,
+        appLanguage: user.appLanguage,
+        profileImage: user.profileImage,
+        role: user.role,
+        lastLogin: updatedUser.lastLogin,
+        kycId: user.kycId,
+        kycStatus: user.kycStatus,
+        kycUrl: user.kycUrl,
+        address: user.address,
+        country: user.country,
+        walletAddress: user.walletAddress || null
+      }
+    });
+  } catch (error) {
+    console.error('MFA login verification error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'An error occurred during MFA verification',
+      error: error.message
+    });
+  }
+}));
+
 
 // ===== MFA ENDPOINTS =====
 
