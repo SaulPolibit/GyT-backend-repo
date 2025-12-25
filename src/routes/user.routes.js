@@ -287,7 +287,48 @@ router.get('/profile', authenticate, catchAsync(async (req, res) => {
  * @access  Private (requires authentication)
  */
 router.put('/profile', authenticate, catchAsync(async (req, res) => {
-  const { firstName, lastName, email, appLanguage, newPassword, oldPassword, role, kycId, kycStatus, kycUrl, address, country, phoneNumber } = req.body;
+  const {
+    firstName,
+    lastName,
+    email,
+    appLanguage,
+    newPassword,
+    oldPassword,
+    role,
+    address,
+    addressLine1,
+    addressLine2,
+    city,
+    state,
+    postalCode,
+    country,
+    phoneNumber,
+    // Investor fields
+    investorType,
+    taxId,
+    accreditedInvestor,
+    riskTolerance,
+    investmentPreferences,
+    // Individual investor fields
+    fullName,
+    dateOfBirth,
+    nationality,
+    passportNumber,
+    // Institution investor fields
+    institutionName,
+    institutionType,
+    registrationNumber,
+    legalRepresentative,
+    // Fund of Funds investor fields
+    fundName,
+    fundManager,
+    aum,
+    // Family Office investor fields
+    officeName,
+    familyName,
+    principalContact,
+    assetsUnderManagement
+  } = req.body;
 
   // Get user ID from authenticated token
   const userId = req.auth.userId || req.user.id;
@@ -413,19 +454,6 @@ router.put('/profile', authenticate, catchAsync(async (req, res) => {
     updateData.appLanguage = appLanguage;
   }
 
-  // Update KYC and location fields if provided (all optional, skip empty strings)
-  if (kycId !== undefined && kycId !== null && kycId !== '') {
-    updateData.kycId = kycId;
-  }
-
-  if (kycStatus !== undefined && kycStatus !== null && kycStatus !== '') {
-    updateData.kycStatus = kycStatus;
-  }
-
-  if (kycUrl !== undefined && kycUrl !== null && kycUrl !== '') {
-    updateData.kycUrl = kycUrl;
-  }
-
   if (address !== undefined && address !== null && address !== '') {
     updateData.address = address;
   }
@@ -436,6 +464,112 @@ router.put('/profile', authenticate, catchAsync(async (req, res) => {
 
   if (phoneNumber !== undefined && phoneNumber !== null && phoneNumber !== '') {
     updateData.phoneNumber = phoneNumber;
+  }
+
+  // Address fields
+  if (addressLine1 !== undefined && addressLine1 !== null && addressLine1 !== '') {
+    updateData.addressLine1 = addressLine1;
+  }
+
+  if (addressLine2 !== undefined && addressLine2 !== null && addressLine2 !== '') {
+    updateData.addressLine2 = addressLine2;
+  }
+
+  if (city !== undefined && city !== null && city !== '') {
+    updateData.city = city;
+  }
+
+  if (state !== undefined && state !== null && state !== '') {
+    updateData.state = state;
+  }
+
+  if (postalCode !== undefined && postalCode !== null && postalCode !== '') {
+    updateData.postalCode = postalCode;
+  }
+
+  // Investor fields
+  if (investorType !== undefined && investorType !== null && investorType !== '') {
+    updateData.investorType = investorType;
+  }
+
+  if (taxId !== undefined && taxId !== null && taxId !== '') {
+    updateData.taxId = taxId;
+  }
+
+  if (accreditedInvestor !== undefined && accreditedInvestor !== null) {
+    updateData.accreditedInvestor = accreditedInvestor;
+  }
+
+  if (riskTolerance !== undefined && riskTolerance !== null && riskTolerance !== '') {
+    updateData.riskTolerance = riskTolerance;
+  }
+
+  if (investmentPreferences !== undefined && investmentPreferences !== null && investmentPreferences !== '') {
+    updateData.investmentPreferences = investmentPreferences;
+  }
+
+  // Individual investor fields
+  if (fullName !== undefined && fullName !== null && fullName !== '') {
+    updateData.fullName = fullName;
+  }
+
+  if (dateOfBirth !== undefined && dateOfBirth !== null && dateOfBirth !== '') {
+    updateData.dateOfBirth = dateOfBirth;
+  }
+
+  if (nationality !== undefined && nationality !== null && nationality !== '') {
+    updateData.nationality = nationality;
+  }
+
+  if (passportNumber !== undefined && passportNumber !== null && passportNumber !== '') {
+    updateData.passportNumber = passportNumber;
+  }
+
+  // Institution investor fields
+  if (institutionName !== undefined && institutionName !== null && institutionName !== '') {
+    updateData.institutionName = institutionName;
+  }
+
+  if (institutionType !== undefined && institutionType !== null && institutionType !== '') {
+    updateData.institutionType = institutionType;
+  }
+
+  if (registrationNumber !== undefined && registrationNumber !== null && registrationNumber !== '') {
+    updateData.registrationNumber = registrationNumber;
+  }
+
+  if (legalRepresentative !== undefined && legalRepresentative !== null && legalRepresentative !== '') {
+    updateData.legalRepresentative = legalRepresentative;
+  }
+
+  // Fund of Funds investor fields
+  if (fundName !== undefined && fundName !== null && fundName !== '') {
+    updateData.fundName = fundName;
+  }
+
+  if (fundManager !== undefined && fundManager !== null && fundManager !== '') {
+    updateData.fundManager = fundManager;
+  }
+
+  if (aum !== undefined && aum !== null && aum !== '') {
+    updateData.aum = aum;
+  }
+
+  // Family Office investor fields
+  if (officeName !== undefined && officeName !== null && officeName !== '') {
+    updateData.officeName = officeName;
+  }
+
+  if (familyName !== undefined && familyName !== null && familyName !== '') {
+    updateData.familyName = familyName;
+  }
+
+  if (principalContact !== undefined && principalContact !== null && principalContact !== '') {
+    updateData.principalContact = principalContact;
+  }
+
+  if (assetsUnderManagement !== undefined && assetsUnderManagement !== null && assetsUnderManagement !== '') {
+    updateData.assetsUnderManagement = assetsUnderManagement;
   }
 
   // Update user in database
@@ -452,11 +586,48 @@ router.put('/profile', authenticate, catchAsync(async (req, res) => {
       appLanguage: updatedUser.appLanguage,
       profileImage: updatedUser.profileImage,
       role: updatedUser.role,
+      isActive: updatedUser.isActive,
+      isEmailVerified: updatedUser.isEmailVerified,
+      phoneNumber: updatedUser.phoneNumber,
+      // KYC fields
       kycId: updatedUser.kycId,
       kycStatus: updatedUser.kycStatus,
       kycUrl: updatedUser.kycUrl,
+      // Address fields
       address: updatedUser.address,
-      country: updatedUser.country
+      country: updatedUser.country,
+      addressLine1: updatedUser.addressLine1,
+      addressLine2: updatedUser.addressLine2,
+      city: updatedUser.city,
+      state: updatedUser.state,
+      postalCode: updatedUser.postalCode,
+      // Investor fields
+      investorType: updatedUser.investorType,
+      taxId: updatedUser.taxId,
+      accreditedInvestor: updatedUser.accreditedInvestor,
+      riskTolerance: updatedUser.riskTolerance,
+      investmentPreferences: updatedUser.investmentPreferences,
+      // Individual investor fields
+      fullName: updatedUser.fullName,
+      dateOfBirth: updatedUser.dateOfBirth,
+      nationality: updatedUser.nationality,
+      passportNumber: updatedUser.passportNumber,
+      // Institution investor fields
+      institutionName: updatedUser.institutionName,
+      institutionType: updatedUser.institutionType,
+      registrationNumber: updatedUser.registrationNumber,
+      legalRepresentative: updatedUser.legalRepresentative,
+      // Fund of Funds investor fields
+      fundName: updatedUser.fundName,
+      fundManager: updatedUser.fundManager,
+      aum: updatedUser.aum,
+      // Family Office investor fields
+      officeName: updatedUser.officeName,
+      familyName: updatedUser.familyName,
+      principalContact: updatedUser.principalContact,
+      assetsUnderManagement: updatedUser.assetsUnderManagement,
+      // Blockchain wallet
+      walletAddress: updatedUser.walletAddress,
     }
   });
 }));

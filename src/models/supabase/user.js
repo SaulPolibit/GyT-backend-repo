@@ -7,7 +7,8 @@ const ROLES = {
   ROOT: 0,
   ADMIN: 1,
   SUPPORT: 2,
-  INVESTOR: 3
+  INVESTOR: 3,
+  GUEST: 4
 };
 
 // Role names for display
@@ -15,7 +16,8 @@ const ROLE_NAMES = {
   0: 'root',
   1: 'admin',
   2: 'support',
-  3: 'investor'
+  3: 'investor',
+  4: 'guest'
 };
 
 class User {
