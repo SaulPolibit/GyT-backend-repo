@@ -77,6 +77,7 @@ router.get('/me', authenticate, catchAsync(async (req, res) => {
  * @access  Private (requires authentication)
  */
 router.post('/', authenticate, handleDocumentUpload, catchAsync(async (req, res) => {
+  const { userRole } = getUserContext(req);
   const {
     email,
     submissionId,
@@ -91,6 +92,14 @@ router.post('/', authenticate, handleDocumentUpload, catchAsync(async (req, res)
     paymentMethod,
     walletAddress
   } = req.body;
+
+  // Guest and Investor roles cannot create payments
+  if (userRole === ROLES.GUEST || userRole === ROLES.INVESTOR) {
+    return res.status(403).json({
+      success: false,
+      message: 'Unauthorized: Guest and Investor users cannot create payments'
+    });
+  }
 
   // Validate required fields
   validate(email, 'Email is required');
@@ -370,11 +379,11 @@ router.put('/:id', authenticate, handleDocumentUpload, catchAsync(async (req, re
   const { userRole } = getUserContext(req);
   const { id } = req.params;
 
-  // Only ROOT and ADMIN roles can update payments
-  if (userRole !== ROLES.ROOT && userRole !== ROLES.ADMIN) {
+  // Only ROOT, ADMIN, and STAFF roles can update payments
+  if (userRole !== ROLES.ROOT && userRole !== ROLES.ADMIN && userRole !== ROLES.STAFF) {
     return res.status(403).json({
       success: false,
-      message: 'Unauthorized: Only Root and Admin users can update payments'
+      message: 'Unauthorized: Only Root, Admin, and Staff users can update payments'
     });
   }
 
@@ -447,8 +456,17 @@ router.put('/:id', authenticate, handleDocumentUpload, catchAsync(async (req, re
  * @access  Private (requires authentication)
  */
 router.patch('/:id/status', authenticate, catchAsync(async (req, res) => {
+  const { userRole } = getUserContext(req);
   const { id } = req.params;
   const { status } = req.body;
+
+  // Guest and Investor roles cannot update payment status
+  if (userRole === ROLES.GUEST || userRole === ROLES.INVESTOR) {
+    return res.status(403).json({
+      success: false,
+      message: 'Unauthorized: Guest and Investor users cannot update payment status'
+    });
+  }
 
   validate(status, 'Status is required');
 
@@ -476,8 +494,17 @@ router.patch('/:id/status', authenticate, catchAsync(async (req, res) => {
  * @access  Private (requires authentication)
  */
 router.patch('/:id/payment-transaction', authenticate, catchAsync(async (req, res) => {
+  const { userRole } = getUserContext(req);
   const { id } = req.params;
   const { paymentTransactionHash } = req.body;
+
+  // Guest and Investor roles cannot update payment transaction
+  if (userRole === ROLES.GUEST || userRole === ROLES.INVESTOR) {
+    return res.status(403).json({
+      success: false,
+      message: 'Unauthorized: Guest and Investor users cannot update payment transactions'
+    });
+  }
 
   validate(paymentTransactionHash, 'Payment transaction hash is required');
 
@@ -499,8 +526,17 @@ router.patch('/:id/payment-transaction', authenticate, catchAsync(async (req, re
  * @access  Private (requires authentication)
  */
 router.patch('/:id/token-transaction', authenticate, catchAsync(async (req, res) => {
+  const { userRole } = getUserContext(req);
   const { id } = req.params;
   const { mintTransactionHash } = req.body;
+
+  // Guest and Investor roles cannot update token transaction
+  if (userRole === ROLES.GUEST || userRole === ROLES.INVESTOR) {
+    return res.status(403).json({
+      success: false,
+      message: 'Unauthorized: Guest and Investor users cannot update token transactions'
+    });
+  }
 
   validate(mintTransactionHash, 'Token transaction hash is required');
 
@@ -522,7 +558,16 @@ router.patch('/:id/token-transaction', authenticate, catchAsync(async (req, res)
  * @access  Private (requires authentication)
  */
 router.delete('/:id', authenticate, catchAsync(async (req, res) => {
+  const { userRole } = getUserContext(req);
   const { id } = req.params;
+
+  // Guest and Investor roles cannot delete payments
+  if (userRole === ROLES.GUEST || userRole === ROLES.INVESTOR) {
+    return res.status(403).json({
+      success: false,
+      message: 'Unauthorized: Guest and Investor users cannot delete payments'
+    });
+  }
 
   const payment = await Payment.findById(id);
   validate(payment, 'Payment not found');
