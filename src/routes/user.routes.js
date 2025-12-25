@@ -63,39 +63,36 @@ router.post('/register', authenticate, catchAsync(async (req, res) => {
     });
   }
 
-  // Create user in Supabase Auth first
-  const supabase = getSupabase();
-  const { data: authData, error: authError } = await supabase.auth.signUp({
-    email,
-    password,
-    options: {
-      data: {
-        first_name: firstName,
-        last_name: lastName || ''
-      }
+  // Create user in Supabase Auth using admin client to bypass email confirmation
+  const { createClient } = require('@supabase/supabase-js');
+  const supabaseUrl = process.env.SUPABASE_URL;
+  const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  const adminClient = createClient(supabaseUrl, supabaseServiceKey, {
+    auth: {
+      autoRefreshToken: false,
+      persistSession: false
     }
   });
 
-  console.log('Supabase Auth signUp response:', {
+  // Use admin API to create user with email already confirmed
+  const { data: authData, error: authError } = await adminClient.auth.admin.createUser({
+    email,
+    password,
+    email_confirm: true, // Auto-confirm email
+    user_metadata: {
+      first_name: firstName,
+      last_name: lastName || ''
+    }
+  });
+
+  console.log('Supabase Auth createUser response:', {
     user: authData?.user ? { id: authData.user.id, email: authData.user.email } : null,
-    session: authData?.session ? 'Session created' : 'No session',
     error: authError
   });
 
   // If user already exists in Supabase Auth, try to get their ID and create users table entry
-  if (authError && authError.message === 'User already registered') {
+  if (authError && (authError.message === 'User already registered' || authError.message.includes('already been registered'))) {
     console.log('User exists in Supabase Auth but not in users table, attempting to sync...');
-
-    // Use service role to get the user by email
-    const { createClient } = require('@supabase/supabase-js');
-    const supabaseUrl = process.env.SUPABASE_URL;
-    const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-    const adminClient = createClient(supabaseUrl, supabaseServiceKey, {
-      auth: {
-        autoRefreshToken: false,
-        persistSession: false
-      }
-    });
 
     // Get user by email from Supabase Auth
     const { data: { users }, error: getUserError } = await adminClient.auth.admin.listUsers();
