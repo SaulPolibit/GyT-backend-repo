@@ -1106,6 +1106,64 @@ router.get('/:id', authenticate, catchAsync(async (req, res) => {
 }));
 
 /**
+ * @route   PATCH /api/users/:id/status
+ * @desc    Enable or disable user account by updating isActive field
+ * @access  Private (requires authentication, Root or Admin only)
+ * @params  id - User UUID to update
+ * @body    isActive - Boolean value to set account status
+ */
+router.patch('/:id/status', authenticate, catchAsync(async (req, res) => {
+  const { userRole } = getUserContext(req);
+  const { id } = req.params;
+  const { isActive } = req.body;
+
+  // Only ROOT and ADMIN roles can enable/disable user accounts
+  if (userRole !== ROLES.ROOT && userRole !== ROLES.ADMIN) {
+    return res.status(403).json({
+      success: false,
+      message: 'Unauthorized: Only ROOT and ADMIN users can enable/disable user accounts'
+    });
+  }
+
+  validate(id, 'User ID is required');
+  validate(isActive !== undefined && isActive !== null, 'isActive field is required');
+  validate(typeof isActive === 'boolean', 'isActive must be a boolean value');
+
+  // Check if user exists
+  const user = await User.findById(id);
+  if (!user) {
+    return res.status(404).json({
+      success: false,
+      message: 'User not found'
+    });
+  }
+
+  // Prevent deactivating root users
+  if (user.role === ROLES.ROOT && isActive === false) {
+    return res.status(400).json({
+      success: false,
+      message: 'Cannot deactivate ROOT user accounts'
+    });
+  }
+
+  // Update user's isActive status
+  const updatedUser = await User.findByIdAndUpdate(id, { isActive });
+
+  res.status(200).json({
+    success: true,
+    message: `User account ${isActive ? 'enabled' : 'disabled'} successfully`,
+    data: {
+      id: updatedUser.id,
+      email: updatedUser.email,
+      firstName: updatedUser.firstName,
+      lastName: updatedUser.lastName,
+      role: updatedUser.role,
+      isActive: updatedUser.isActive
+    }
+  });
+}));
+
+/**
  * @route   DELETE /api/users/:id
  * @desc    Delete user by ID
  * @access  Private (requires authentication, Root only)
