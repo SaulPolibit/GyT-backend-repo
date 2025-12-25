@@ -10,7 +10,7 @@ const {
   validate
 } = require('../middleware/errorHandler');
 const { NotificationSettings } = require('../models/supabase');
-const { canCreate, getUserContext } = require('../middleware/rbac');
+const { getUserContext } = require('../middleware/rbac');
 
 const router = express.Router();
 
@@ -58,16 +58,17 @@ router.get('/settings', authenticate, catchAsync(async (req, res) => {
 /**
  * @route   PUT /api/notifications/settings
  * @desc    Update user notification settings
- * @access  Private (Root, Admin only)
+ * @access  Private (Root, Admin, Staff, Investor)
  */
 router.put('/settings', authenticate, catchAsync(async (req, res) => {
   const { userRole } = getUserContext(req);
 
-  // Block GUEST, SUPPORT, and INVESTOR from updating
-  if (!canCreate(userRole)) {
+  // Allow roles: 0 (Root), 1 (Admin), 2 (Staff), 3 (Investor)
+  const allowedRoles = [0, 1, 2, 3];
+  if (!allowedRoles.includes(userRole)) {
     return res.status(403).json({
       success: false,
-      message: 'Access denied. Only Root and Admin users can update notification settings.'
+      message: 'Access denied. Only Root, Admin, Staff, and Investor users can update notification settings.'
     });
   }
 
