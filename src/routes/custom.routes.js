@@ -79,16 +79,6 @@ router.post('/login', catchAsync(async (req, res) => {
     });
   }
 
-  // Check if MFA is required (user exists but no session)
-  if (authData.user && !authData.session) {
-    return res.status(200).json({
-      success: true,
-      mfaRequired: true,
-      message: 'MFA verification required',
-      userId: authData.user.id
-    });
-  }
-
   // Check if user exists in users table
   const user = await User.findById(authData.user.id);
   if (!user) {
