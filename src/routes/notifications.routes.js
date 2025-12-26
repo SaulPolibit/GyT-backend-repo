@@ -10,7 +10,7 @@ const {
   validate
 } = require('../middleware/errorHandler');
 const { NotificationSettings } = require('../models/supabase');
-const { getUserContext } = require('../middleware/rbac');
+const { getUserContext, ROLES } = require('../middleware/rbac');
 
 const router = express.Router();
 
@@ -28,6 +28,40 @@ router.use((req, res, next) => {
 
   next();
 });
+
+/**
+ * @route   GET /api/notifications/settings/:id
+ * @desc    Get user notification settings by user ID (Root/Admin only)
+ * @access  Private (Root and Admin only)
+ */
+router.get('/settings/:id', authenticate, catchAsync(async (req, res) => {
+  const { userRole } = getUserContext(req);
+  const { id } = req.params;
+
+  // Only ROOT and ADMIN roles can access other users' notification settings
+  if (userRole !== ROLES.ROOT && userRole !== ROLES.ADMIN) {
+    return res.status(403).json({
+      success: false,
+      message: 'Unauthorized: Only Root and Admin users can access user notification settings by ID'
+    });
+  }
+
+  validate(id, 'User ID is required');
+
+  // Find or create notification settings for the specified user
+  let settings = await NotificationSettings.findByUserId(id);
+
+  if (!settings) {
+    // Create new settings with all fields set to false (defaults)
+    settings = await NotificationSettings.create({ userId: id });
+  }
+
+  res.status(200).json({
+    success: true,
+    message: 'Notification settings retrieved successfully',
+    data: settings
+  });
+}));
 
 /**
  * @route   GET /api/notifications/settings
