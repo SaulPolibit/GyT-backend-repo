@@ -121,12 +121,14 @@ class CrossmintWalletService {
     try {
       console.log('[Crossmint] Retrieving wallet for user:', userData.email);
 
-      // Get wallet by linked user via REST API
-      const linkedUser = `email:${userData.email}:${userData.userId}`;
+      // For non-custodial wallets, use email and userId as separate params
       const response = await axios.get(
         `${this.baseUrl}/v1-alpha1/wallets`,
         {
-          params: { linkedUser },
+          params: {
+            email: userData.email,
+            userId: userData.userId
+          },
           headers: {
             'X-API-KEY': this.apiKey,
           },
