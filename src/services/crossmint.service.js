@@ -175,6 +175,69 @@ class CrossmintWalletService {
   }
 
   /**
+   * Get wallet token balances
+   * @param {string} walletId - Crossmint wallet ID
+   * @returns {Array} Array of token balances with details
+   */
+  async getWalletBalances(walletId) {
+    if (!this.isInitialized) {
+      throw new Error('Crossmint service not initialized. Call initialize() first.');
+    }
+
+    try {
+      console.log('[Crossmint] Fetching balances for wallet:', walletId);
+
+      const response = await axios.get(
+        `${this.baseUrl}/v1-alpha1/wallets/${walletId}/balances`,
+        {
+          headers: {
+            'X-API-KEY': this.apiKey,
+          },
+        }
+      );
+
+      console.log('[Crossmint] ✓ Balances retrieved');
+      console.log('[Crossmint] Balances:', JSON.stringify(response.data, null, 2));
+
+      return response.data.balances || response.data || [];
+    } catch (error) {
+      console.error('[Crossmint] Failed to fetch balances:', error.response?.data || error.message);
+      throw new Error(`Failed to fetch wallet balances: ${error.response?.data?.message || error.message}`);
+    }
+  }
+
+  /**
+   * Get wallet NFTs
+   * @param {string} walletId - Crossmint wallet ID
+   * @returns {Array} Array of NFTs
+   */
+  async getWalletNFTs(walletId) {
+    if (!this.isInitialized) {
+      throw new Error('Crossmint service not initialized. Call initialize() first.');
+    }
+
+    try {
+      console.log('[Crossmint] Fetching NFTs for wallet:', walletId);
+
+      const response = await axios.get(
+        `${this.baseUrl}/v1-alpha1/wallets/${walletId}/nfts`,
+        {
+          headers: {
+            'X-API-KEY': this.apiKey,
+          },
+        }
+      );
+
+      console.log('[Crossmint] ✓ NFTs retrieved');
+
+      return response.data.nfts || response.data || [];
+    } catch (error) {
+      console.error('[Crossmint] Failed to fetch NFTs:', error.response?.data || error.message);
+      throw new Error(`Failed to fetch wallet NFTs: ${error.response?.data?.message || error.message}`);
+    }
+  }
+
+  /**
    * Check if the service is ready to use
    * @returns {boolean}
    */

@@ -1623,6 +1623,52 @@ router.post('/prospera/link-wallet', authenticate, catchAsync(async (req, res) =
   }
 }));
 
+// ===== WALLET BALANCES ENDPOINT =====
+
+/**
+ * @route   GET /api/custom/wallet/balances
+ * @desc    Get token balances for authenticated user's wallet
+ * @access  Private
+ */
+router.get('/wallet/balances', authenticate, catchAsync(async (req, res) => {
+  const user = await User.findById(req.auth.userId);
+
+  if (!user) {
+    throw new NotFoundError('User not found');
+  }
+
+  if (!user.walletAddress) {
+    return res.status(200).json({
+      success: true,
+      data: {
+        balances: [],
+        message: 'No wallet found for user'
+      }
+    });
+  }
+
+  // Get walletId from user - need to fetch from Crossmint
+  // Since we only have walletAddress, we need to get wallet details first
+  const walletData = await crossmint.getWallet({
+    email: user.email,
+    userId: user.id
+  });
+
+  // Get balances
+  const balances = await crossmint.getWalletBalances(walletData.walletId);
+
+  // Filter for USDT and ERC-3643 tokens (optional - can be done on frontend)
+  // For now, return all balances
+  res.status(200).json({
+    success: true,
+    data: {
+      walletAddress: user.walletAddress,
+      balances: balances || [],
+      chain: walletData.chain || 'polygon-amoy'
+    }
+  });
+}));
+
 /**
  * @route   GET /api/custom/health
  * @desc    Health check for Custom API routes
