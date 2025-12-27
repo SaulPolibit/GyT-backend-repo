@@ -26,6 +26,23 @@ router.get('/health', (_req, res) => {
 });
 
 /**
+ * @route   GET /api/firm-settings/logo
+ * @desc    Get firm logo (public endpoint)
+ * @access  Public
+ */
+router.get('/logo', catchAsync(async (_req, res) => {
+  // Get the firm settings (single record)
+  const settings = await FirmSettings.get();
+
+  res.status(200).json({
+    success: true,
+    data: {
+      firmLogo: settings?.firmLogo || null
+    }
+  });
+}));
+
+/**
  * @route   GET /api/firm-settings
  * @desc    Get firm settings for logged-in user
  * @access  Private
