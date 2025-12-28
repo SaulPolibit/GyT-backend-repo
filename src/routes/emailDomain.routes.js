@@ -221,6 +221,8 @@ router.post('/:id/verify', authenticate, catchAsync(async (req, res) => {
   let domainStatus;
   try {
     domainStatus = await getDomain(domain.resendDomainId);
+    // Debug: Log what Resend returns
+    console.log('[EmailDomain] Resend domain status:', JSON.stringify(domainStatus, null, 2));
   } catch (error) {
     return res.status(400).json({
       success: false,
