@@ -59,6 +59,7 @@ router.get('/me', authenticate, catchAsync(async (req, res) => {
           status: structure.status,
           baseCurrency: structure.baseCurrency,
           description: structure.description,
+          bannerImage: structure.bannerImage,
         } : null
       };
     })
@@ -218,6 +219,7 @@ router.get('/', authenticate, catchAsync(async (req, res) => {
           status: structure.status,
           baseCurrency: structure.baseCurrency,
           description: structure.description,
+          bannerImage: structure.bannerImage,
         } : null
       };
     })
