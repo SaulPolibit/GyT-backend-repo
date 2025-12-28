@@ -7,6 +7,7 @@
  */
 
 const jwt = require('jsonwebtoken');
+const crypto = require('crypto');
 
 /**
  * Verify JWT token
@@ -24,19 +25,46 @@ const verifyJWT = (token) => {
 };
 
 /**
- * Verify API Key
- * @param {string} apiKey - API key to verify
+ * Hash API Key using SHA-256
+ * @param {string} apiKey - API key to hash
+ * @returns {string} - Hashed API key
+ */
+const hashApiKey = (apiKey) => {
+  return crypto.createHash('sha256').update(apiKey).digest('hex');
+};
+
+/**
+ * Verify API Key using hash comparison
+ * @param {string} hashedApiKey - Hashed API key from request header (already hashed by frontend)
  * @returns {boolean} - True if valid
  */
-const verifyApiKey = (apiKey) => {
+const verifyApiKey = (hashedApiKey) => {
+  // The expected API key (plain text) stored in environment variables
   const validApiKey = process.env.API_KEY;
-  
+
   if (!validApiKey) {
     console.warn('API_KEY not set in environment variables');
     return false;
   }
-  
-  return apiKey === validApiKey;
+
+  if (!hashedApiKey) {
+    return false;
+  }
+
+  // Hash the valid API key from environment to compare with the hashed key from headers
+  const validKeyHash = hashApiKey(validApiKey);
+
+  // Use timing-safe comparison to prevent timing attacks
+  // Compare the hashed key from headers with our hashed key
+  try {
+    return crypto.timingSafeEqual(
+      Buffer.from(hashedApiKey),
+      Buffer.from(validKeyHash)
+    );
+  } catch {
+    // If lengths don't match, timingSafeEqual throws an error
+    return false;
+  }
 };
 
 /**
@@ -328,6 +356,7 @@ module.exports = {
   rateLimit,
   verifyJWT,
   verifyApiKey,
+  hashApiKey,
   requireApiKey,
   requireBearerToken,
 };
