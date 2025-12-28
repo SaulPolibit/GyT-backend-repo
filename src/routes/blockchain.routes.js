@@ -1912,31 +1912,15 @@ router.post('/contract/mint-tokens', authenticate, catchAsync(async (req, res) =
     {
       'inputs': [
         {
-          'name': 'role',
-          'type': 'bytes32'
-        },
-        {
-          'name': 'account',
+          'name': 'agent',
           'type': 'address'
         }
       ],
-      'name': 'hasRole',
+      'name': 'isAgent',
       'outputs': [
         {
           'name': '',
           'type': 'bool'
-        }
-      ],
-      'stateMutability': 'view',
-      'type': 'function'
-    },
-    {
-      'inputs': [],
-      'name': 'AGENT_ROLE',
-      'outputs': [
-        {
-          'name': '',
-          'type': 'bytes32'
         }
       ],
       'stateMutability': 'view',
@@ -1980,21 +1964,19 @@ router.post('/contract/mint-tokens', authenticate, catchAsync(async (req, res) =
       console.warn('Could not verify contract owner (contract may not have owner() function):', ownerCheckError.message);
     }
 
-    // If not owner, check for AGENT_ROLE
+    // If not owner, check if account is an agent
     if (!hasPermission) {
       try {
-        const agentRole = await contract.methods.AGENT_ROLE().call();
-        const hasAgentRole = await contract.methods.hasRole(agentRole, account.address).call();
-        console.log('Has AGENT_ROLE:', hasAgentRole);
-        permissionDetails.hasAgentRole = hasAgentRole;
-        permissionDetails.agentRole = agentRole;
+        const isAgent = await contract.methods.isAgent(account.address).call();
+        console.log('Is Agent:', isAgent);
+        permissionDetails.isAgent = isAgent;
 
-        if (hasAgentRole) {
+        if (isAgent) {
           hasPermission = true;
-          console.log('Minting account has AGENT_ROLE');
+          console.log('Minting account is a registered agent');
         }
-      } catch (roleCheckError) {
-        console.warn('Could not verify AGENT_ROLE (contract may not implement role-based access):', roleCheckError.message);
+      } catch (agentCheckError) {
+        console.warn('Could not verify agent status (contract may not have isAgent() function):', agentCheckError.message);
       }
     }
 
@@ -2003,7 +1985,7 @@ router.post('/contract/mint-tokens', authenticate, catchAsync(async (req, res) =
       return res.status(403).json({
         success: false,
         error: 'Permission denied',
-        message: `Minting account (${account.address}) does not have permission to mint tokens. The account must be either the contract owner or have AGENT_ROLE.`,
+        message: `Minting account (${account.address}) does not have permission to mint tokens. The account must be either the contract owner or a registered agent.`,
         details: permissionDetails
       });
     }
