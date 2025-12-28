@@ -1879,7 +1879,7 @@ router.post('/contract/mint-tokens', authenticate, catchAsync(async (req, res) =
     });
   }
 
-  // Contract ABI for the mint function and owner check
+  // Contract ABI for the mint function, owner check, and role checks
   const contractAbi = [
     {
       'inputs': [
@@ -1908,6 +1908,39 @@ router.post('/contract/mint-tokens', authenticate, catchAsync(async (req, res) =
       ],
       'stateMutability': 'view',
       'type': 'function'
+    },
+    {
+      'inputs': [
+        {
+          'name': 'role',
+          'type': 'bytes32'
+        },
+        {
+          'name': 'account',
+          'type': 'address'
+        }
+      ],
+      'name': 'hasRole',
+      'outputs': [
+        {
+          'name': '',
+          'type': 'bool'
+        }
+      ],
+      'stateMutability': 'view',
+      'type': 'function'
+    },
+    {
+      'inputs': [],
+      'name': 'AGENT_ROLE',
+      'outputs': [
+        {
+          'name': '',
+          'type': 'bytes32'
+        }
+      ],
+      'stateMutability': 'view',
+      'type': 'function'
     }
   ];
 
@@ -1926,26 +1959,53 @@ router.post('/contract/mint-tokens', authenticate, catchAsync(async (req, res) =
     console.log('Target user address:', userAddress);
     console.log('Amount to mint:', parsedAmount);
 
-    // Check if the minting account is the contract owner
+    // Check if the minting account has permission (owner or AGENT_ROLE)
+    let hasPermission = false;
+    let permissionDetails = {
+      mintingAccount: account.address,
+      contractAddress: contractAddress
+    };
+
     try {
+      // First, try to check if account is the owner
       const contractOwner = await contract.methods.owner().call();
       console.log('Contract owner address:', contractOwner);
+      permissionDetails.contractOwner = contractOwner;
 
-      if (contractOwner.toLowerCase() !== account.address.toLowerCase()) {
-        return res.status(403).json({
-          success: false,
-          error: 'Permission denied',
-          message: `Minting account (${account.address}) is not the contract owner (${contractOwner}). The contract must be deployed with the same account used for minting, or the minting account must be granted MINTER_ROLE.`,
-          details: {
-            mintingAccount: account.address,
-            contractOwner: contractOwner,
-            contractAddress: contractAddress
-          }
-        });
+      if (contractOwner.toLowerCase() === account.address.toLowerCase()) {
+        hasPermission = true;
+        console.log('Minting account is the contract owner');
       }
     } catch (ownerCheckError) {
       console.warn('Could not verify contract owner (contract may not have owner() function):', ownerCheckError.message);
-      // Continue with minting attempt - contract might use different permission model
+    }
+
+    // If not owner, check for AGENT_ROLE
+    if (!hasPermission) {
+      try {
+        const agentRole = await contract.methods.AGENT_ROLE().call();
+        const hasAgentRole = await contract.methods.hasRole(agentRole, account.address).call();
+        console.log('Has AGENT_ROLE:', hasAgentRole);
+        permissionDetails.hasAgentRole = hasAgentRole;
+        permissionDetails.agentRole = agentRole;
+
+        if (hasAgentRole) {
+          hasPermission = true;
+          console.log('Minting account has AGENT_ROLE');
+        }
+      } catch (roleCheckError) {
+        console.warn('Could not verify AGENT_ROLE (contract may not implement role-based access):', roleCheckError.message);
+      }
+    }
+
+    // If still no permission, return error with details
+    if (!hasPermission) {
+      return res.status(403).json({
+        success: false,
+        error: 'Permission denied',
+        message: `Minting account (${account.address}) does not have permission to mint tokens. The account must be either the contract owner or have AGENT_ROLE.`,
+        details: permissionDetails
+      });
     }
 
     // Get current nonce
