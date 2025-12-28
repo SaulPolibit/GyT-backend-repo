@@ -22,11 +22,19 @@ router.post('/register', authenticate, catchAsync(async (req, res) => {
   const { userRole } = getUserContext(req);
   const { email, password, firstName, lastName, role } = req.body;
 
-  // Only ROOT role can create users
-  if (userRole !== ROLES.ROOT) {
+  // Only ROOT and ADMIN roles can create users
+  if (userRole !== ROLES.ROOT && userRole !== ROLES.ADMIN) {
     return res.status(403).json({
       success: false,
-      message: 'Unauthorized: Only ROOT users can create new users'
+      message: 'Unauthorized: Only ROOT and ADMIN users can create new users'
+    });
+  }
+
+  // Prevent ADMIN from creating ROOT users
+  if (userRole === ROLES.ADMIN && role === 0) {
+    return res.status(403).json({
+      success: false,
+      message: 'Unauthorized: ADMIN users cannot create ROOT users'
     });
   }
 
