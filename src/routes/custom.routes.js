@@ -1951,6 +1951,16 @@ router.post('/wallet/transfer', authenticate, catchAsync(async (req, res) => {
     });
   }
 
+  // Override the chain in tokenLocator with the correct environment-based chain
+  // This ensures production uses 'polygon' and staging uses 'polygon-amoy' regardless of what frontend sends
+  const correctChain = crossmint.chain;
+  let correctedTokenLocator = tokenLocator;
+  if (tokenLocator.includes(':')) {
+    const tokenPart = tokenLocator.split(':')[1]; // Get the token address or symbol
+    correctedTokenLocator = `${correctChain}:${tokenPart}`;
+    console.log('[Wallet Transfer] Chain corrected:', tokenLocator, '->', correctedTokenLocator);
+  }
+
   // Validate recipient address format (basic EVM address check)
   const evmAddressRegex = /^0x[a-fA-F0-9]{40}$/;
   if (!evmAddressRegex.test(recipient)) {
@@ -2037,13 +2047,13 @@ router.post('/wallet/transfer', authenticate, catchAsync(async (req, res) => {
   console.log('[Wallet Transfer] Initiating transfer...');
   console.log('[Wallet Transfer] From:', user.walletAddress);
   console.log('[Wallet Transfer] To:', recipient);
-  console.log('[Wallet Transfer] Token:', tokenLocator);
+  console.log('[Wallet Transfer] Token:', correctedTokenLocator);
   console.log('[Wallet Transfer] Amount:', amount);
 
   try {
     const transferResult = await crossmint.transferToken(
       user.walletAddress,
-      tokenLocator,
+      correctedTokenLocator,
       recipient,
       amount
     );
@@ -2056,7 +2066,7 @@ router.post('/wallet/transfer', authenticate, catchAsync(async (req, res) => {
       userEmail: user.email,
       fromWallet: user.walletAddress,
       toWallet: recipient,
-      tokenLocator,
+      tokenLocator: correctedTokenLocator,
       amount,
       transferId: transferResult.id,
       status: transferResult.status,
@@ -2071,7 +2081,7 @@ router.post('/wallet/transfer', authenticate, catchAsync(async (req, res) => {
         status: transferResult.status,
         from: user.walletAddress,
         to: recipient,
-        token: tokenLocator,
+        token: correctedTokenLocator,
         amount: amount,
         onChain: transferResult.onChain
       }
