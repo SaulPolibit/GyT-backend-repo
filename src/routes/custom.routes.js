@@ -79,6 +79,7 @@ const deriveSupabasePassword = (prosperaId) => {
 /**
  * Create or sign in a Supabase Auth user for Prospera OAuth users
  * This enables MFA functionality for Prospera users
+ * Uses Admin API to bypass email confirmation requirements
  * @param {Object} supabase - Supabase client
  * @param {string} email - User's email
  * @param {string} prosperaId - User's Prospera ID
@@ -98,47 +99,66 @@ const getOrCreateSupabaseAuthUser = async (supabase, email, prosperaId) => {
     return { session: signInData.session, user: signInData.user, error: null };
   }
 
-  // If sign in failed, try to create the user
-  console.log('[Supabase Auth] User not found or wrong password, creating new user...');
+  // If sign in failed, create user using Admin API (bypasses email confirmation)
+  console.log('[Supabase Auth] User not found, creating with Admin API...');
+  console.log('[Supabase Auth] Sign in error was:', signInError?.message);
 
-  const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
-    email,
-    password,
-    options: {
-      emailRedirectTo: undefined, // No email confirmation needed
-      data: {
+  try {
+    // Use Admin API to create user with confirmed email (no verification needed)
+    const { data: adminData, error: adminError } = await supabase.auth.admin.createUser({
+      email,
+      password,
+      email_confirm: true, // Mark email as confirmed (Prospera already verified it)
+      user_metadata: {
         prospera_id: prosperaId,
         created_via: 'prospera_oauth'
       }
+    });
+
+    if (adminError) {
+      // Check if user already exists (created by another process)
+      if (adminError.message?.includes('already been registered') ||
+          adminError.message?.includes('already exists')) {
+        console.log('[Supabase Auth] User exists, attempting sign in again...');
+
+        // User exists, try signing in again (maybe password was different before)
+        const { data: retrySignIn, error: retryError } = await supabase.auth.signInWithPassword({
+          email,
+          password
+        });
+
+        if (retrySignIn?.session) {
+          return { session: retrySignIn.session, user: retrySignIn.user, error: null };
+        }
+
+        console.error('[Supabase Auth] Retry sign in failed:', retryError?.message);
+        return { session: null, user: null, error: retryError };
+      }
+
+      console.error('[Supabase Auth] Admin create user error:', adminError.message);
+      return { session: null, user: null, error: adminError };
     }
-  });
 
-  if (signUpError) {
-    // If user already exists but password is wrong, this is an edge case
-    // The user might have been created with a different password
-    console.error('[Supabase Auth] Sign up error:', signUpError.message);
-    return { session: null, user: null, error: signUpError };
-  }
+    console.log('[Supabase Auth] Created user via Admin API:', email);
 
-  // If sign up requires email confirmation, sign in immediately
-  if (signUpData?.user && !signUpData?.session) {
-    // User created but needs confirmation - try admin approach or sign in
-    console.log('[Supabase Auth] User created, attempting sign in...');
+    // Now sign in the newly created user to get a session
     const { data: newSignIn, error: newSignInError } = await supabase.auth.signInWithPassword({
       email,
       password
     });
 
     if (newSignIn?.session) {
+      console.log('[Supabase Auth] ✓ Session created for new user');
       return { session: newSignIn.session, user: newSignIn.user, error: null };
     }
 
-    // If still can't sign in, return what we have
-    return { session: signUpData.session, user: signUpData.user, error: newSignInError };
-  }
+    console.error('[Supabase Auth] Sign in after create failed:', newSignInError?.message);
+    return { session: null, user: adminData.user, error: newSignInError };
 
-  console.log('[Supabase Auth] Created new user:', email);
-  return { session: signUpData.session, user: signUpData.user, error: null };
+  } catch (error) {
+    console.error('[Supabase Auth] Unexpected error:', error.message);
+    return { session: null, user: null, error };
+  }
 };
 
 // ===== LOGIN API ENDPOINTS =====
