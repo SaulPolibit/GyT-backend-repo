@@ -68,14 +68,13 @@ class MFAFactor {
       .upsert([dbData], {
         onConflict: 'user_id,factor_type'
       })
-      .select()
-      .single();
+      .select();
 
     if (error) {
       throw new Error(`Error upserting MFA factor: ${error.message}`);
     }
 
-    return this._toModel(data);
+    return this._toModel(data?.[0] || null);
   }
 
   /**
