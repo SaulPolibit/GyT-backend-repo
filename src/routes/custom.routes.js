@@ -1907,7 +1907,7 @@ router.get('/wallet/balances', authenticate, catchAsync(async (req, res) => {
  * @access  Private
  */
 router.post('/wallet/transfer', authenticate, catchAsync(async (req, res) => {
-  const { tokenLocator, recipient, amount, mfaCode } = req.body;
+  const { tokenLocator, recipient, amount, mfaCode, supabaseAccessToken } = req.body;
   const supabase = getSupabase();
 
   // Ensure Crossmint is initialized
@@ -1940,10 +1940,10 @@ router.post('/wallet/transfer', authenticate, catchAsync(async (req, res) => {
   }
 
   // Validate required fields
-  if (!tokenLocator || !recipient || !amount || !mfaCode) {
+  if (!tokenLocator || !recipient || !amount || !mfaCode || !supabaseAccessToken) {
     return res.status(400).json({
       success: false,
-      message: 'Missing required fields: tokenLocator, recipient, amount, mfaCode'
+      message: 'Missing required fields: tokenLocator, recipient, amount, mfaCode, supabaseAccessToken'
     });
   }
 
@@ -1973,12 +1973,26 @@ router.post('/wallet/transfer', authenticate, catchAsync(async (req, res) => {
     });
   }
 
-  // Verify MFA code
+  // Verify MFA code using user's Supabase session
   console.log('[Wallet Transfer] Verifying MFA for user:', user.email);
 
   try {
-    // Create MFA challenge
-    const { data: challengeData, error: challengeError } = await supabase.auth.mfa.challenge({
+    // Create a Supabase client authenticated as the user
+    const { createClient } = require('@supabase/supabase-js');
+    const userSupabase = createClient(
+      process.env.SUPABASE_URL,
+      process.env.SUPABASE_ANON_KEY,
+      {
+        global: {
+          headers: {
+            Authorization: `Bearer ${supabaseAccessToken}`
+          }
+        }
+      }
+    );
+
+    // Create MFA challenge using user's session
+    const { data: challengeData, error: challengeError } = await userSupabase.auth.mfa.challenge({
       factorId: user.mfaFactorId
     });
 
@@ -1986,12 +2000,12 @@ router.post('/wallet/transfer', authenticate, catchAsync(async (req, res) => {
       console.error('[Wallet Transfer] MFA challenge error:', challengeError.message);
       return res.status(400).json({
         success: false,
-        message: 'Failed to create MFA challenge'
+        message: 'Failed to create MFA challenge. Please ensure you are logged in.'
       });
     }
 
     // Verify MFA code
-    const { data: verifyData, error: verifyError } = await supabase.auth.mfa.verify({
+    const { data: verifyData, error: verifyError } = await userSupabase.auth.mfa.verify({
       factorId: user.mfaFactorId,
       challengeId: challengeData.id,
       code: mfaCode
