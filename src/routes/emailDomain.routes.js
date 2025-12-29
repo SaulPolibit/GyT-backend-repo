@@ -220,6 +220,10 @@ router.post('/:id/verify', authenticate, catchAsync(async (req, res) => {
   // Get the actual current status from Resend
   let domainStatus;
   try {
+    // Debug: Log which API key is being used (first 10 chars only)
+    const apiKey = process.env.RESEND_API_KEY || '';
+    console.log('[EmailDomain] Using API key:', apiKey.substring(0, 10) + '...');
+
     domainStatus = await getDomain(domain.resendDomainId);
     // Debug: Log what Resend returns
     console.log('[EmailDomain] Resend domain status:', JSON.stringify(domainStatus, null, 2));

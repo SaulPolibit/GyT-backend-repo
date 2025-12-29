@@ -11,8 +11,11 @@
 const { Resend } = require('resend');
 const { EmailLog, EmailDomain } = require('../models/supabase');
 
-// Initialize Resend with API key from environment variable
-const resend = new Resend(process.env.RESEND_API_KEY);
+// Create Resend client lazily to ensure it uses current env variable
+// (avoids module caching issues in serverless environments)
+function getResendClient() {
+  return new Resend(process.env.RESEND_API_KEY);
+}
 
 // Cache for verified domain to avoid repeated DB queries
 let cachedVerifiedDomain = null;
@@ -92,6 +95,7 @@ async function testConnection(userId, testEmail) {
 
   try {
     const startTime = Date.now();
+    const resend = getResendClient();
 
     // Send test email using Resend
     const { data, error } = await resend.emails.send({
@@ -237,6 +241,7 @@ async function sendEmail(userId, emailData) {
 
   try {
     // Send email via Resend
+    const resend = getResendClient();
     const { data, error } = await resend.emails.send(emailPayload);
 
     if (error) {

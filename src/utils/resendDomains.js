@@ -7,8 +7,11 @@
 
 const { Resend } = require('resend');
 
-// Initialize Resend with API key from environment variable
-const resend = new Resend(process.env.RESEND_API_KEY);
+// Create Resend client lazily to ensure it uses current env variable
+// (avoids module caching issues in serverless environments)
+function getResendClient() {
+  return new Resend(process.env.RESEND_API_KEY);
+}
 
 /**
  * Create a new domain in Resend
@@ -32,6 +35,7 @@ async function createDomain(domainName, region = 'us-east-1') {
   }
 
   try {
+    const resend = getResendClient();
     const { data, error } = await resend.domains.create({
       name: domainName,
       region: region
@@ -76,6 +80,7 @@ async function getDomain(domainId) {
   }
 
   try {
+    const resend = getResendClient();
     const { data, error } = await resend.domains.get(domainId);
 
     if (error) {
@@ -110,6 +115,7 @@ async function verifyDomain(domainId) {
   }
 
   try {
+    const resend = getResendClient();
     const { data, error } = await resend.domains.verify(domainId);
 
     if (error) {
@@ -137,6 +143,7 @@ async function listDomains() {
   }
 
   try {
+    const resend = getResendClient();
     const { data, error } = await resend.domains.list();
 
     if (error) {
@@ -170,6 +177,7 @@ async function deleteDomain(domainId) {
   }
 
   try {
+    const resend = getResendClient();
     const { error } = await resend.domains.remove(domainId);
 
     if (error) {
