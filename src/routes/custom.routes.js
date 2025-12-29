@@ -55,6 +55,92 @@ const ensureBodyParsed = (req) => {
   });
 };
 
+/**
+ * Derive a deterministic Supabase password from prosperaId
+ * This allows Prospera OAuth users to have Supabase Auth accounts for MFA
+ * The password is derived (not stored) and can be recreated anytime
+ * @param {string} prosperaId - User's Prospera ID
+ * @returns {string} Derived password
+ */
+const deriveSupabasePassword = (prosperaId) => {
+  const crypto = require('crypto');
+  const secret = process.env.SUPABASE_USER_SECRET || 'default-secret-change-in-production';
+
+  if (!process.env.SUPABASE_USER_SECRET) {
+    console.warn('[Supabase Auth] WARNING: SUPABASE_USER_SECRET not set, using default. Set this in production!');
+  }
+
+  return crypto
+    .createHmac('sha256', secret)
+    .update(prosperaId)
+    .digest('hex');
+};
+
+/**
+ * Create or sign in a Supabase Auth user for Prospera OAuth users
+ * This enables MFA functionality for Prospera users
+ * @param {Object} supabase - Supabase client
+ * @param {string} email - User's email
+ * @param {string} prosperaId - User's Prospera ID
+ * @returns {Object} { session, user, error }
+ */
+const getOrCreateSupabaseAuthUser = async (supabase, email, prosperaId) => {
+  const password = deriveSupabasePassword(prosperaId);
+
+  // First, try to sign in (user might already exist)
+  const { data: signInData, error: signInError } = await supabase.auth.signInWithPassword({
+    email,
+    password
+  });
+
+  if (signInData?.session) {
+    console.log('[Supabase Auth] Signed in existing user:', email);
+    return { session: signInData.session, user: signInData.user, error: null };
+  }
+
+  // If sign in failed, try to create the user
+  console.log('[Supabase Auth] User not found or wrong password, creating new user...');
+
+  const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
+    email,
+    password,
+    options: {
+      emailRedirectTo: undefined, // No email confirmation needed
+      data: {
+        prospera_id: prosperaId,
+        created_via: 'prospera_oauth'
+      }
+    }
+  });
+
+  if (signUpError) {
+    // If user already exists but password is wrong, this is an edge case
+    // The user might have been created with a different password
+    console.error('[Supabase Auth] Sign up error:', signUpError.message);
+    return { session: null, user: null, error: signUpError };
+  }
+
+  // If sign up requires email confirmation, sign in immediately
+  if (signUpData?.user && !signUpData?.session) {
+    // User created but needs confirmation - try admin approach or sign in
+    console.log('[Supabase Auth] User created, attempting sign in...');
+    const { data: newSignIn, error: newSignInError } = await supabase.auth.signInWithPassword({
+      email,
+      password
+    });
+
+    if (newSignIn?.session) {
+      return { session: newSignIn.session, user: newSignIn.user, error: null };
+    }
+
+    // If still can't sign in, return what we have
+    return { session: signUpData.session, user: signUpData.user, error: newSignInError };
+  }
+
+  console.log('[Supabase Auth] Created new user:', email);
+  return { session: signUpData.session, user: signUpData.user, error: null };
+};
+
 // ===== LOGIN API ENDPOINTS =====
 
 router.post('/login', catchAsync(async (req, res) => {
@@ -1272,6 +1358,27 @@ router.post('/prospera/callback', catchAsync(async (req, res) => {
     });
   }
 
+  // Sign into Supabase Auth for MFA functionality
+  let supabaseSession = null;
+  try {
+    console.log('[Prospera Callback] Signing into Supabase Auth for MFA...');
+    const supabase = getSupabase();
+    const { session, error: supabaseError } = await getOrCreateSupabaseAuthUser(
+      supabase,
+      user.email,
+      user.prosperaId
+    );
+
+    if (supabaseError) {
+      console.error('[Prospera Callback] Supabase Auth error:', supabaseError.message);
+    } else if (session) {
+      supabaseSession = session;
+      console.log('[Prospera Callback] ✓ Supabase Auth session ready');
+    }
+  } catch (supabaseAuthError) {
+    console.error('[Prospera Callback] Supabase Auth failed:', supabaseAuthError.message);
+  }
+
   // Check if user has MFA enabled
   if (user.mfaFactorId) {
     console.log('[Prospera Callback] MFA required for user:', user.email);
@@ -1289,6 +1396,13 @@ router.post('/prospera/callback', catchAsync(async (req, res) => {
         refreshToken: prosperapData.refreshToken,
         expiresAt: prosperapData.expiresAt,
       },
+      // Include Supabase tokens for MFA verification
+      supabase: supabaseSession ? {
+        accessToken: supabaseSession.access_token,
+        refreshToken: supabaseSession.refresh_token,
+        expiresIn: supabaseSession.expires_in,
+        expiresAt: supabaseSession.expires_at
+      } : null,
     });
   }
 
@@ -1312,6 +1426,13 @@ router.post('/prospera/callback', catchAsync(async (req, res) => {
       refreshToken: prosperapData.refreshToken,
       expiresAt: prosperapData.expiresAt,
     },
+    // Include Supabase tokens for MFA functionality
+    supabase: supabaseSession ? {
+      accessToken: supabaseSession.access_token,
+      refreshToken: supabaseSession.refresh_token,
+      expiresIn: supabaseSession.expires_in,
+      expiresAt: supabaseSession.expires_at
+    } : null,
     user: {
       id: user.id,
       email: user.email,
@@ -1435,6 +1556,29 @@ router.post('/prospera/complete-registration', catchAsync(async (req, res) => {
     console.error('[Prospera Registration] Continuing with registration without wallet...');
   }
 
+  // Create Supabase Auth user for MFA functionality
+  let supabaseSession = null;
+  try {
+    console.log('[Prospera Registration] Creating Supabase Auth user for MFA...');
+    const supabase = getSupabase();
+    const { session, error: supabaseError } = await getOrCreateSupabaseAuthUser(
+      supabase,
+      user.email,
+      userData.prosperaId
+    );
+
+    if (supabaseError) {
+      console.error('[Prospera Registration] Supabase Auth error:', supabaseError.message);
+      console.error('[Prospera Registration] MFA will not be available for this user');
+    } else if (session) {
+      supabaseSession = session;
+      console.log('[Prospera Registration] ✓ Supabase Auth user ready for MFA');
+    }
+  } catch (supabaseAuthError) {
+    console.error('[Prospera Registration] Supabase Auth creation failed:', supabaseAuthError.message);
+    console.error('[Prospera Registration] MFA will not be available for this user');
+  }
+
   // Create JWT token (same format as regular login)
   const token = createToken({
     id: user.id,
@@ -1455,6 +1599,13 @@ router.post('/prospera/complete-registration', catchAsync(async (req, res) => {
       refreshToken: sessionData.refreshToken,
       expiresAt: sessionData.expiresAt,
     },
+    // Include Supabase tokens for MFA functionality
+    supabase: supabaseSession ? {
+      accessToken: supabaseSession.access_token,
+      refreshToken: supabaseSession.refresh_token,
+      expiresIn: supabaseSession.expires_in,
+      expiresAt: supabaseSession.expires_at
+    } : null,
     user: {
       id: user.id,
       email: user.email,
