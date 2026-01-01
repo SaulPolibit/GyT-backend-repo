@@ -6,6 +6,7 @@
 const express = require('express');
 const { Web3 } = require('web3');
 const apiManager = require('../services/apiManager');
+const Web3Service = require('../services/web3Service');
 const { authenticate, requireApiKey, requireBearerToken, requireRole } = require('../middleware/auth');
 const {
   catchAsync,
@@ -93,11 +94,11 @@ router.post('/contract/owner', authenticate, catchAsync(async (req, res) => {
     });
   }
 
-  // Initialize Web3 with the RPC URL
-  const web3 = new Web3(rpcURL);
+  // Initialize Web3 Service
+  const web3Service = new Web3Service(rpcURL);
 
   // Validate contract address format
-  if (!web3.utils.isAddress(contractAddress)) {
+  if (!web3Service.isValidAddress(contractAddress)) {
     return res.status(400).json({
       success: false,
       error: 'Invalid address',
@@ -105,21 +106,9 @@ router.post('/contract/owner', authenticate, catchAsync(async (req, res) => {
     });
   }
 
-  // Contract ABI for the owner function
-  const contractAbi = [{
-    'inputs': [],
-    'name': 'owner',
-    'outputs': [{ 'internalType': 'address', 'name': '', 'type': 'address' }],
-    'stateMutability': 'view',
-    'type': 'function'
-  }];
-
   try {
-    // Create contract instance
-    const contract = new web3.eth.Contract(contractAbi, contractAddress);
-
-    // Call the owner function
-    const ownerAddress = await contract.methods.owner().call();
+    // Get contract owner
+    const ownerAddress = await web3Service.getContractOwner(contractAddress);
 
     // Validate the response
     if (!ownerAddress || ownerAddress === '0x0000000000000000000000000000000000000000') {
@@ -136,7 +125,7 @@ router.post('/contract/owner', authenticate, catchAsync(async (req, res) => {
       data: {
         contractAddress,
         ownerAddress: ownerAddress.toLowerCase(),
-        network: rpcURL.includes('polygon') ? 'Polygon' : 'Ethereum'
+        network: web3Service.getNetworkType()
       }
     });
 
@@ -183,11 +172,11 @@ router.post('/contract/call', authenticate, requireRole([0, 1]), catchAsync(asyn
     });
   }
 
-  // Initialize Web3 with the RPC URL
-  const web3 = new Web3(rpcURL);
+  // Initialize Web3 Service
+  const web3Service = new Web3Service(rpcURL);
 
   // Validate contract address format
-  if (!web3.utils.isAddress(contractAddress)) {
+  if (!web3Service.isValidAddress(contractAddress)) {
     return res.status(400).json({
       success: false,
       error: 'Invalid address',
@@ -196,20 +185,8 @@ router.post('/contract/call', authenticate, requireRole([0, 1]), catchAsync(asyn
   }
 
   try {
-    // Create contract instance
-    const contract = new web3.eth.Contract(abi, contractAddress);
-
-    // Check if function exists
-    if (!contract.methods[functionName]) {
-      return res.status(400).json({
-        success: false,
-        error: 'Function not found',
-        message: `Function '${functionName}' not found in contract ABI`
-      });
-    }
-
     // Call the function
-    const result = await contract.methods[functionName](...params).call();
+    const result = await web3Service.callContractFunction(contractAddress, abi, functionName, params);
 
     res.status(200).json({
       success: true,
@@ -224,6 +201,14 @@ router.post('/contract/call', authenticate, requireRole([0, 1]), catchAsync(asyn
 
   } catch (error) {
     // Handle specific Web3 errors
+    if (error.message.includes('not found')) {
+      return res.status(400).json({
+        success: false,
+        error: 'Function not found',
+        message: error.message
+      });
+    }
+
     if (error.message.includes('revert')) {
       return res.status(400).json({
         success: false,
@@ -262,11 +247,11 @@ router.get('/balance/:address', authenticate, catchAsync(async (req, res) => {
     });
   }
 
-  // Initialize Web3 with the RPC URL
-  const web3 = new Web3(rpcURL);
+  // Initialize Web3 Service
+  const web3Service = new Web3Service(rpcURL);
 
   // Validate address format
-  if (!web3.utils.isAddress(address)) {
+  if (!web3Service.isValidAddress(address)) {
     return res.status(400).json({
       success: false,
       error: 'Invalid address',
@@ -276,10 +261,10 @@ router.get('/balance/:address', authenticate, catchAsync(async (req, res) => {
 
   try {
     // Get balance in wei
-    const balanceWei = await web3.eth.getBalance(address);
+    const balanceWei = await web3Service.getBalance(address);
 
     // Convert to ether
-    const balanceEther = web3.utils.fromWei(balanceWei, 'ether');
+    const balanceEther = web3Service.fromWei(balanceWei, 'ether');
 
     res.status(200).json({
       success: true,
@@ -288,7 +273,7 @@ router.get('/balance/:address', authenticate, catchAsync(async (req, res) => {
         address: address.toLowerCase(),
         balanceWei: balanceWei.toString(),
         balanceEther: balanceEther,
-        network: rpcURL.includes('polygon') ? 'Polygon' : 'Ethereum'
+        network: web3Service.getNetworkType()
       }
     });
 
