@@ -58,7 +58,7 @@ router.post('/', authenticate, catchAsync(async (req, res) => {
 
   const subscription = await Subscription.create(subscriptionData);
 
-  res.status(201).json({
+  res.status(200).json({
     success: true,
     message: 'Subscription created successfully',
     data: subscription
