@@ -1840,6 +1840,67 @@ router.post('/prospera/link-wallet', authenticate, catchAsync(async (req, res) =
   }
 }));
 
+// ===== WALLET REGISTRATION ENDPOINT (Embedded/Non-Custodial) =====
+
+/**
+ * @route   POST /api/custom/wallet/register
+ * @desc    Register a non-custodial embedded wallet address for the authenticated user
+ * @access  Private
+ *
+ * This endpoint is used when users create wallets using Crossmint's embedded wallet SDK
+ * on the client side. The wallet is non-custodial (user controls keys), and this endpoint
+ * simply links the wallet address to the user's account in the database.
+ */
+router.post('/wallet/register', authenticate, catchAsync(async (req, res) => {
+  const { walletAddress, walletType = 'embedded', signerType = 'email' } = req.body;
+
+  console.log('[Wallet Register] Registering wallet for user:', req.auth.userId);
+  console.log('[Wallet Register] Wallet address:', walletAddress);
+  console.log('[Wallet Register] Wallet type:', walletType);
+  console.log('[Wallet Register] Signer type:', signerType);
+
+  // Validate wallet address format
+  if (!walletAddress || !/^0x[a-fA-F0-9]{40}$/.test(walletAddress)) {
+    return res.status(400).json({
+      success: false,
+      message: 'Invalid wallet address format'
+    });
+  }
+
+  // Find the user
+  const user = await User.findById(req.auth.userId);
+
+  if (!user) {
+    throw new NotFoundError('User not found');
+  }
+
+  // Check if user already has a wallet
+  if (user.walletAddress && user.walletAddress !== walletAddress) {
+    console.log('[Wallet Register] User already has a different wallet:', user.walletAddress);
+    // For now, allow updating to a new wallet
+    // In production, you might want to add additional verification
+  }
+
+  // Update user with new wallet address and type
+  const updatedUser = await User.update(req.auth.userId, {
+    wallet_address: walletAddress,
+    wallet_type: walletType,
+    signer_type: signerType
+  });
+
+  console.log('[Wallet Register] Wallet registered successfully for user:', req.auth.userId);
+
+  res.status(200).json({
+    success: true,
+    message: 'Wallet registered successfully',
+    data: {
+      walletAddress,
+      walletType,
+      signerType
+    }
+  });
+}));
+
 // ===== WALLET BALANCES ENDPOINT =====
 
 /**
