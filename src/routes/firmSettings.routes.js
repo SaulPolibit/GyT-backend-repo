@@ -144,13 +144,6 @@ router.put('/', authenticate, handleFirmLogoUpload, catchAsync(async (req, res) 
   // Get existing global settings
   const existingSettings = await FirmSettings.get();
 
-  if (!existingSettings) {
-    return res.status(404).json({
-      success: false,
-      message: 'No firm settings found. Please create settings first.'
-    });
-  }
-
   const updateData = {};
   const allowedFields = [
     'firmName',
@@ -200,15 +193,40 @@ router.put('/', authenticate, handleFirmLogoUpload, catchAsync(async (req, res) 
 
   validate(Object.keys(updateData).length > 0, 'No valid fields provided for update');
 
-  // Add userId to track who made the update
+  // Add userId to track who made the update/creation
   updateData.userId = userId;
 
-  // Update using the existing settings ID
-  const settings = await FirmSettings.findByIdAndUpdate(existingSettings.id, updateData);
+  let settings;
+  let message;
+  let statusCode;
 
-  res.status(200).json({
+  // If settings don't exist, create them
+  if (!existingSettings) {
+    // Set defaults for required fields if not provided
+    const createData = {
+      firmName: updateData.firmName || 'My Firm',
+      firmLogo: updateData.firmLogo || null,
+      firmDescription: updateData.firmDescription || '',
+      firmWebsite: updateData.firmWebsite || '',
+      firmAddress: updateData.firmAddress || '',
+      firmPhone: updateData.firmPhone || '',
+      firmEmail: updateData.firmEmail || '',
+      userId
+    };
+
+    settings = await FirmSettings.create(createData);
+    message = 'Firm settings created successfully';
+    statusCode = 201;
+  } else {
+    // Update using the existing settings ID
+    settings = await FirmSettings.findByIdAndUpdate(existingSettings.id, updateData);
+    message = 'Firm settings updated successfully';
+    statusCode = 200;
+  }
+
+  res.status(statusCode).json({
     success: true,
-    message: 'Firm settings updated successfully',
+    message,
     data: settings
   });
 }));
