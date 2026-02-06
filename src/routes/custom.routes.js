@@ -548,25 +548,26 @@ router.post('/mfa/enroll', authenticate, catchAsync(async (req, res) => {
     });
   }
 
-  // Save MFA factor to database
+  // Save MFA factor to database with isActive: false (pending verification)
+  // MFA will only be activated after user verifies their first TOTP code
   await MFAFactor.upsert({
     userId,
     factorId: data.id,
     factorType,
     friendlyName: friendlyName || 'Authenticator App',
-    isActive: true,
+    isActive: false, // Pending verification
     enrolledAt: new Date().toISOString()
   });
 
-  // Save factorId to user model
-  await User.findByIdAndUpdate(userId, {
-    mfaFactorId: data.id
-  });
+  // NOTE: We do NOT save mfaFactorId to user model yet
+  // This will be done in /mfa/verify-enrollment after user verifies their first code
+  // This prevents users from getting locked out if they don't complete enrollment
 
   res.status(200).json({
     success: true,
-    message: `MFA enrollment initiated using ${factorType.toUpperCase()}. Scan the QR code with your authenticator app (Google Authenticator, Authy, etc.).`,
+    message: `MFA enrollment initiated using ${factorType.toUpperCase()}. Scan the QR code with your authenticator app and enter the verification code to complete setup.`,
     info: !wasFactorTypeProvided ? 'Using default factorType: totp' : undefined,
+    requiresVerification: true,
     data: {
       factorId: data.id,
       factorType: factorType,
@@ -575,6 +576,172 @@ router.post('/mfa/enroll', authenticate, catchAsync(async (req, res) => {
       uri: data.totp.uri // otpauth:// URI
     }
   });
+}));
+
+/**
+ * @route   POST /api/custom/mfa/verify-enrollment
+ * @desc    Verify first TOTP code to complete MFA enrollment
+ * @access  Private
+ * @body    {
+ *            factorId: string - Factor ID from enrollment
+ *            code: string - 6-digit TOTP code from authenticator app
+ *            supabaseAccessToken: string - Supabase access token
+ *            supabaseRefreshToken: string - Supabase refresh token
+ *          }
+ */
+router.post('/mfa/verify-enrollment', authenticate, catchAsync(async (req, res) => {
+  const { id: userId } = req.user;
+  const {
+    factorId,
+    code,
+    supabaseAccessToken: bodyAccessToken,
+    supabaseRefreshToken: bodyRefreshToken
+  } = req.body || {};
+
+  // Validate required fields
+  if (!factorId || !code) {
+    return res.status(400).json({
+      success: false,
+      message: 'Factor ID and verification code are required'
+    });
+  }
+
+  if (code.length !== 6 || !/^\d{6}$/.test(code)) {
+    return res.status(400).json({
+      success: false,
+      message: 'Verification code must be 6 digits'
+    });
+  }
+
+  // Get Supabase tokens
+  const supabaseAccessToken = bodyAccessToken || req.headers['x-supabase-access-token'];
+  const supabaseRefreshToken = bodyRefreshToken || req.headers['x-supabase-refresh-token'];
+
+  if (!supabaseAccessToken || !supabaseRefreshToken) {
+    return res.status(400).json({
+      success: false,
+      message: 'Supabase access and refresh tokens are required'
+    });
+  }
+
+  // Verify the factor belongs to this user and is pending
+  const factor = await MFAFactor.findByFactorId(factorId);
+  if (!factor) {
+    return res.status(404).json({
+      success: false,
+      message: 'MFA factor not found. Please start enrollment again.'
+    });
+  }
+
+  if (factor.userId !== userId) {
+    return res.status(403).json({
+      success: false,
+      message: 'This MFA factor does not belong to you'
+    });
+  }
+
+  if (factor.isActive) {
+    return res.status(400).json({
+      success: false,
+      message: 'MFA is already verified and active'
+    });
+  }
+
+  // Create a fresh Supabase client and set the user's session
+  // Using a fresh client avoids singleton state issues with the service role client
+  const { createClient } = require('@supabase/supabase-js');
+  const userSupabase = createClient(
+    process.env.SUPABASE_URL,
+    process.env.SUPABASE_ANON_KEY
+  );
+
+  // Debug: Log token info (first 20 chars only for security)
+  console.log('[MFA Verify Enrollment] Access token prefix:', supabaseAccessToken?.substring(0, 20));
+  console.log('[MFA Verify Enrollment] Token length:', supabaseAccessToken?.length);
+
+  // Set the user's session on the fresh client
+  const { data: sessionData, error: sessionError } = await userSupabase.auth.setSession({
+    access_token: supabaseAccessToken,
+    refresh_token: supabaseRefreshToken
+  });
+
+  if (sessionError) {
+    console.error('[MFA Verify Enrollment] Session error:', sessionError);
+    return res.status(401).json({
+      success: false,
+      message: 'Invalid or expired session. Please login again.',
+      error: sessionError.message
+    });
+  }
+
+  console.log('[MFA Verify Enrollment] Session established for user:', sessionData?.user?.email);
+
+  try {
+    // Create MFA challenge using user-authenticated client
+    const { data: challengeData, error: challengeError } = await userSupabase.auth.mfa.challenge({
+      factorId
+    });
+
+    if (challengeError) {
+      console.error('MFA challenge error during enrollment verification:', challengeError);
+      return res.status(400).json({
+        success: false,
+        message: 'Failed to create verification challenge',
+        error: challengeError.message
+      });
+    }
+
+    // Verify the code
+    const { data: verifyData, error: verifyError } = await userSupabase.auth.mfa.verify({
+      factorId,
+      challengeId: challengeData.id,
+      code
+    });
+
+    if (verifyError) {
+      console.error('MFA verification error during enrollment:', verifyError);
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid verification code. Please check your authenticator app and try again.',
+        error: verifyError.message
+      });
+    }
+
+    // Verification successful - now activate MFA
+    // Update MFA factor to active
+    await MFAFactor.upsert({
+      userId,
+      factorId,
+      factorType: factor.factorType,
+      friendlyName: factor.friendlyName,
+      isActive: true,
+      enrolledAt: factor.enrolledAt
+    });
+
+    // Now save factorId to user model - MFA is officially active
+    await User.findByIdAndUpdate(userId, {
+      mfaFactorId: factorId
+    });
+
+    console.log(`[MFA] Enrollment verified and activated for user ${userId}`);
+
+    res.status(200).json({
+      success: true,
+      message: 'MFA has been successfully enabled on your account',
+      data: {
+        factorId,
+        isActive: true
+      }
+    });
+
+  } catch (error) {
+    console.error('Error during MFA enrollment verification:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to verify MFA enrollment',
+      error: error.message
+    });
+  }
 }));
 
 
