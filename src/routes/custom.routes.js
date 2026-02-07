@@ -210,6 +210,84 @@ router.post('/login', catchAsync(async (req, res) => {
 }));
 
 /**
+ * @route   POST /api/custom/reset-password
+ * @desc    Reset user password using Supabase access token from password recovery email
+ * @access  Public
+ * @body    {
+ *            accessToken: string - Supabase access token from password reset email URL
+ *            newPassword: string - New password (min 8 characters)
+ *          }
+ */
+router.post('/reset-password', catchAsync(async (req, res) => {
+  const { accessToken, newPassword } = req.body;
+
+  // Validate required fields
+  if (!accessToken || !newPassword) {
+    return res.status(400).json({
+      success: false,
+      message: 'Access token and new password are required'
+    });
+  }
+
+  // Validate password length
+  if (newPassword.length < 8) {
+    return res.status(400).json({
+      success: false,
+      message: 'Password must be at least 8 characters long'
+    });
+  }
+
+  try {
+    // Create Supabase client with the access token from the email
+    const { createClient } = require('@supabase/supabase-js');
+    const supabase = createClient(
+      process.env.SUPABASE_URL,
+      process.env.SUPABASE_ANON_KEY
+    );
+
+    // Update password using the access token
+    const { data, error } = await supabase.auth.updateUser(
+      { password: newPassword },
+      { accessToken: accessToken }
+    );
+
+    if (error) {
+      console.error('[Reset Password] Supabase error:', error);
+
+      // Handle specific error cases
+      if (error.message?.includes('expired') || error.message?.includes('invalid')) {
+        return res.status(400).json({
+          success: false,
+          message: 'Password reset link has expired or is invalid. Please request a new one.'
+        });
+      }
+
+      return res.status(400).json({
+        success: false,
+        message: error.message || 'Failed to reset password'
+      });
+    }
+
+    console.log('[Reset Password] Password updated successfully for user:', data.user?.id);
+
+    return res.json({
+      success: true,
+      message: 'Password reset successfully',
+      data: {
+        userId: data.user?.id,
+        email: data.user?.email
+      }
+    });
+  } catch (error) {
+    console.error('[Reset Password] Error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Internal server error while resetting password'
+    });
+  }
+}));
+
+/**
  * @route   POST /api/custom/mfa/login-verify
  * @desc    Verify MFA code during login flow (public endpoint)
  * @access  Public
