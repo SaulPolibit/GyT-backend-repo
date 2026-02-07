@@ -259,6 +259,13 @@ router.post('/login', catchAsync(async (req, res) => {
       message: 'MFA verification required.',
       userId: user.id,
       factorId: user.mfaFactorId,
+      // Include Supabase session tokens needed for MFA challenge
+      supabase: {
+        accessToken: authData.session.access_token,
+        refreshToken: authData.session.refresh_token,
+        expiresIn: authData.session.expires_in,
+        expiresAt: authData.session.expires_at
+      }
     });
   }
 
@@ -315,16 +322,26 @@ router.post('/login', catchAsync(async (req, res) => {
  * @body    {
  *            userId: string - User ID from login response
  *            code: string - 6-digit TOTP code from authenticator app
+ *            supabaseAccessToken: string - Supabase access token from login response
+ *            supabaseRefreshToken: string - Supabase refresh token from login response
  *          }
  */
 router.post('/mfa/login-verify', catchAsync(async (req, res) => {
-  const { userId, code } = req.body;
+  const { userId, code, supabaseAccessToken, supabaseRefreshToken } = req.body;
 
   // Validate required fields
   if (!userId || !code) {
     return res.status(400).json({
       success: false,
       message: 'User ID and verification code are required'
+    });
+  }
+
+  // Validate Supabase tokens
+  if (!supabaseAccessToken || !supabaseRefreshToken) {
+    return res.status(400).json({
+      success: false,
+      message: 'Supabase session tokens are required for MFA verification'
     });
   }
 
@@ -353,12 +370,35 @@ router.post('/mfa/login-verify', catchAsync(async (req, res) => {
     });
   }
 
-  const supabase = getSupabase();
   const factorId = user.mfaFactorId;
 
   try {
-    // Create MFA challenge
-    const { data: challengeData, error: challengeError } = await supabase.auth.mfa.challenge({
+    // Create authenticated Supabase client with user's session
+    const { createClient } = require('@supabase/supabase-js');
+    const userSupabase = createClient(
+      process.env.SUPABASE_URL,
+      process.env.SUPABASE_ANON_KEY
+    );
+
+    // Set the user's session
+    const { data: sessionData, error: sessionError } = await userSupabase.auth.setSession({
+      access_token: supabaseAccessToken,
+      refresh_token: supabaseRefreshToken
+    });
+
+    if (sessionError || !sessionData.session) {
+      console.error('Failed to set Supabase session:', sessionError);
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid session tokens',
+        error: sessionError?.message
+      });
+    }
+
+    console.log('[MFA Login Verify] Session set successfully for user:', userId);
+
+    // Create MFA challenge with authenticated client
+    const { data: challengeData, error: challengeError } = await userSupabase.auth.mfa.challenge({
       factorId
     });
 
@@ -371,8 +411,10 @@ router.post('/mfa/login-verify', catchAsync(async (req, res) => {
       });
     }
 
+    console.log('[MFA Login Verify] Challenge created:', challengeData.id);
+
     // Verify the challenge with the code
-    const { data: verifyData, error: verifyError } = await supabase.auth.mfa.verify({
+    const { data: verifyData, error: verifyError } = await userSupabase.auth.mfa.verify({
       factorId,
       challengeId: challengeData.id,
       code
@@ -524,7 +566,52 @@ router.post('/mfa/enroll', authenticate, catchAsync(async (req, res) => {
     });
   }
 
-  // Enroll in MFA with Supabase Auth
+  // IMPORTANT: Before enrolling, check if user has MFA already fully enabled
+  // This prevents creating duplicate factors
+  const user = await User.findById(userId);
+  if (user?.mfaFactorId) {
+    console.log(`[MFA Enroll] User ${userId} already has active MFA: ${user.mfaFactorId}`);
+    return res.status(400).json({
+      success: false,
+      message: 'MFA is already enabled on this account. Please disable it first before re-enrolling.',
+      error: 'MFA_ALREADY_ENABLED'
+    });
+  }
+
+  // Check for any pending factors in our database and Supabase Auth
+  // This handles the case where user cancelled enrollment and factor still exists
+  console.log(`[MFA Enroll] Checking for existing factors for user ${userId}...`);
+
+  // List all factors in Supabase Auth for this user
+  const { data: existingFactors, error: listError } = await supabase.auth.mfa.listFactors();
+
+  if (!listError && existingFactors && existingFactors.totp && existingFactors.totp.length > 0) {
+    console.log(`[MFA Enroll] Found ${existingFactors.totp.length} existing factor(s) in Supabase Auth`);
+
+    // Clean up each existing factor
+    for (const factor of existingFactors.totp) {
+      console.log(`[MFA Enroll] Cleaning up existing factor: ${factor.id}`);
+      try {
+        const { error: unenrollError } = await supabase.auth.mfa.unenroll({
+          factorId: factor.id
+        });
+
+        if (unenrollError) {
+          console.error(`[MFA Enroll] Error unenrolling factor ${factor.id}:`, unenrollError);
+        } else {
+          console.log(`[MFA Enroll] Successfully unenrolled factor ${factor.id}`);
+        }
+
+        // Also clean up from our database
+        await MFAFactor.delete(factor.id);
+      } catch (cleanupError) {
+        console.error('[MFA Enroll] Error during factor cleanup:', cleanupError);
+      }
+    }
+  }
+
+  // Now proceed with enrollment
+  console.log(`[MFA Enroll] Creating new MFA enrollment for user ${userId}`);
   const { data, error } = await supabase.auth.mfa.enroll({
     factorType,
     friendlyName: friendlyName || 'Authenticator App'
@@ -786,17 +873,27 @@ router.post('/mfa/unenroll', authenticate, catchAsync(async (req, res) => {
 
   // If factorId not provided, get it from database based on user and type
   if (!factorIdToRemove) {
-    const factors = await MFAFactor.findByUserId(userId, true); // active only
-    const factor = factors.find(f => f.factorType === factorType);
+    // First check active factors
+    const activeFactors = await MFAFactor.findByUserId(userId, true);
+    const activeFactor = activeFactors.find(f => f.factorType === factorType);
 
-    if (!factor) {
-      return res.status(404).json({
-        success: false,
-        message: 'No active MFA factor found for this user'
-      });
+    if (activeFactor) {
+      factorIdToRemove = activeFactor.factorId;
+    } else {
+      // If no active factor, check for pending factors
+      const allFactors = await MFAFactor.findByUserId(userId, false);
+      const pendingFactor = allFactors.find(f => f.factorType === factorType && !f.isActive);
+
+      if (pendingFactor) {
+        console.log(`[MFA Unenroll] Found pending factor to clean up: ${pendingFactor.factorId}`);
+        factorIdToRemove = pendingFactor.factorId;
+      } else {
+        return res.status(404).json({
+          success: false,
+          message: 'No MFA factor found for this user'
+        });
+      }
     }
-
-    factorIdToRemove = factor.factorId;
   }
 
   const supabase = getSupabase();
@@ -885,11 +982,13 @@ router.get('/mfa/status', authenticate, catchAsync(async (req, res) => {
   // Get user from database
   const user = await User.findById(userId);
 
-  // Check if user has active MFA
-  const hasActiveMFA = await MFAFactor.hasActiveMFA(userId);
+  // Check if user has active MFA (based on user.mfaFactorId being set)
+  const hasActiveMFA = !!(user?.mfaFactorId);
 
-  // Get all active factors
-  const activeFactors = await MFAFactor.findByUserId(userId, true);
+  // Get all factors (both active and pending) for cleanup purposes
+  const allFactors = await MFAFactor.findByUserId(userId, false); // false = all factors
+  const activeFactors = allFactors.filter(f => f.isActive);
+  const pendingFactors = allFactors.filter(f => !f.isActive);
 
   res.status(200).json({
     success: true,
@@ -897,10 +996,13 @@ router.get('/mfa/status', authenticate, catchAsync(async (req, res) => {
       mfaEnabled: hasActiveMFA,
       mfaFactorId: user?.mfaFactorId || null,
       factorCount: activeFactors.length,
-      factors: activeFactors.map(factor => ({
+      pendingFactorCount: pendingFactors.length,
+      factors: allFactors.map(factor => ({
         id: factor.id,
+        factorId: factor.factorId,
         factorType: factor.factorType,
         friendlyName: factor.friendlyName,
+        isActive: factor.isActive,
         enrolledAt: factor.enrolledAt,
         lastUsedAt: factor.lastUsedAt
       }))
