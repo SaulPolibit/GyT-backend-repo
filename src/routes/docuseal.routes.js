@@ -472,9 +472,48 @@ router.post('/webhook', catchAsync(async (req, res) => {
     const auditLogUrl = data.audit_log_url;
     const status = data.status || 'created';
 
-    // Get email from first submitter
+    // Get email from submitters array
     const submitters = data.submitters || [];
-    const email = submitters.length > 0 ? submitters[0].email : null;
+    console.log('[DocuSeal Webhook] All submitters:', JSON.stringify(submitters, null, 2));
+    console.log('[DocuSeal Webhook] Full data object:', JSON.stringify(data, null, 2));
+
+    let email = null;
+
+    // Strategy 1: Check if data has an email field directly
+    if (data.email) {
+      email = data.email;
+      console.log('[DocuSeal Webhook] Found email in data.email:', email);
+    }
+    // Strategy 2: Find submitter with role name "Client", "Customer", or "Investor"
+    else if (submitters.length > 0) {
+      const clientSubmitter = submitters.find(s =>
+        s.name && (
+          s.name.toLowerCase() === 'client' ||
+          s.name.toLowerCase() === 'customer' ||
+          s.name.toLowerCase() === 'investor'
+        )
+      );
+
+      if (clientSubmitter && clientSubmitter.email) {
+        email = clientSubmitter.email;
+        console.log('[DocuSeal Webhook] Found client submitter by name:', {
+          name: clientSubmitter.name,
+          email: clientSubmitter.email
+        });
+      } else {
+        // Strategy 3: Use first submitter with an email
+        const firstWithEmail = submitters.find(s => s.email);
+        email = firstWithEmail ? firstWithEmail.email : null;
+        console.log('[DocuSeal Webhook] Using first submitter with email:', email);
+
+        // Log submitter structure for debugging
+        if (submitters.length > 0) {
+          console.log('[DocuSeal Webhook] First submitter structure:', submitters[0]);
+        }
+      }
+    }
+
+    console.log('[DocuSeal Webhook] Final extracted email:', email);
 
     // Construct submission URL from slug
     const submissionURL = `https://docuseal.com/s/${slug}`;
@@ -499,13 +538,24 @@ router.post('/webhook', catchAsync(async (req, res) => {
 
     console.log('[DocuSeal Webhook] Creating new submission:', { email, submissionId, submissionURL, auditLogUrl, status });
 
-    // Create new submission record
+    // Find user by email to link the submission
+    const user = await User.findByEmail(email);
+    const userId = user ? user.id : null;
+
+    if (!user) {
+      console.log('[DocuSeal Webhook] Warning: No user found for email:', email);
+    } else {
+      console.log('[DocuSeal Webhook] Found user:', { id: user.id, email: user.email });
+    }
+
+    // Create new submission record with user_id
     const newSubmission = await DocusealSubmission.create({
       email,
       submissionId,
       submissionURL,
       auditLogUrl,
-      status
+      status,
+      userId
     });
 
     console.log('[DocuSeal Webhook] Submission created successfully:', newSubmission);
@@ -527,9 +577,52 @@ router.post('/webhook', catchAsync(async (req, res) => {
     const auditLogUrl = submission.audit_log_url || data.audit_log_url;
     const status = submission.status || 'completed';
 
-    // Get email from submitters or top-level email
-    const submitters = data.submitters || [];
-    const email = data.email || (submitters.length > 0 ? submitters[0].email : null);
+    // Get email from submitters array
+    const submitters = data.submitters || submission.submitters || [];
+    console.log('[DocuSeal Webhook] All submitters:', JSON.stringify(submitters, null, 2));
+    console.log('[DocuSeal Webhook] Full data object:', JSON.stringify(data, null, 2));
+    console.log('[DocuSeal Webhook] Full submission object:', JSON.stringify(submission, null, 2));
+
+    let email = null;
+
+    // Strategy 1: Check if data/submission has an email field directly
+    if (data.email) {
+      email = data.email;
+      console.log('[DocuSeal Webhook] Found email in data.email:', email);
+    } else if (submission.email) {
+      email = submission.email;
+      console.log('[DocuSeal Webhook] Found email in submission.email:', email);
+    }
+    // Strategy 2: Find submitter with role name "Client", "Customer", or "Investor"
+    else if (submitters.length > 0) {
+      const clientSubmitter = submitters.find(s =>
+        s.name && (
+          s.name.toLowerCase() === 'client' ||
+          s.name.toLowerCase() === 'customer' ||
+          s.name.toLowerCase() === 'investor'
+        )
+      );
+
+      if (clientSubmitter && clientSubmitter.email) {
+        email = clientSubmitter.email;
+        console.log('[DocuSeal Webhook] Found client submitter by name:', {
+          name: clientSubmitter.name,
+          email: clientSubmitter.email
+        });
+      } else {
+        // Strategy 3: Use first submitter with an email
+        const firstWithEmail = submitters.find(s => s.email);
+        email = firstWithEmail ? firstWithEmail.email : null;
+        console.log('[DocuSeal Webhook] Using first submitter with email:', email);
+
+        // Log submitter structure for debugging
+        if (submitters.length > 0) {
+          console.log('[DocuSeal Webhook] First submitter structure:', submitters[0]);
+        }
+      }
+    }
+
+    console.log('[DocuSeal Webhook] Final extracted email:', email);
 
     // Construct submission URL
     const submissionURL = submission.url || (slug ? `https://docuseal.com/s/${slug}` : null);
@@ -560,13 +653,24 @@ router.post('/webhook', catchAsync(async (req, res) => {
     if (!existingSubmission) {
       console.log('[DocuSeal Webhook] No existing submission found - creating new one');
 
+      // Find user by email to link the submission
+      const user = await User.findByEmail(email);
+      const userId = user ? user.id : null;
+
+      if (!user) {
+        console.log('[DocuSeal Webhook] Warning: No user found for email:', email);
+      } else {
+        console.log('[DocuSeal Webhook] Found user:', { id: user.id, email: user.email });
+      }
+
       // Create new submission if it doesn't exist
       const newSubmission = await DocusealSubmission.create({
         email,
         submissionId,
         submissionURL,
         auditLogUrl,
-        status
+        status,
+        userId
       });
 
       console.log('[DocuSeal Webhook] New submission created:', newSubmission);
