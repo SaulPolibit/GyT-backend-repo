@@ -10,6 +10,7 @@ const { handleDocumentUpload } = require('../middleware/upload');
 const { uploadToSupabase } = require('../utils/fileUpload');
 const Payment = require('../models/supabase/payment');
 const { Structure, User } = require('../models/supabase');
+const SmartContract = require('../models/supabase/smartContract');
 const { requireInvestmentManagerAccess, getUserContext, ROLES } = require('../middleware/rbac');
 
 const router = express.Router();
@@ -107,7 +108,7 @@ router.post('/', authenticate, handleDocumentUpload, catchAsync(async (req, res)
   validate(email, 'Email is required');
   validate(amount, 'Amount is required');
   validate(structureId, 'Structure ID is required');
-  validate(contractId, 'Contract ID is required');
+  // contractId is optional - contract model not fully implemented yet
 
   // Generate submission ID if not provided
   const finalSubmissionId = submissionId?.trim() || `PAY-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
@@ -129,6 +130,23 @@ router.post('/', authenticate, handleDocumentUpload, catchAsync(async (req, res)
   // Get authenticated user ID
   const userId = req.auth?.userId || req.user?.id;
 
+  // Automatically link to smart contract if it exists for this structure
+  let finalContractId = contractId?.trim() || null;
+  if (!finalContractId) {
+    try {
+      const smartContract = await SmartContract.findOne({ structureId: structureId.trim() });
+      if (smartContract) {
+        finalContractId = smartContract.id;
+        console.log(`[Payment] Auto-linked to smart contract: ${finalContractId}`);
+      } else {
+        console.log(`[Payment] No smart contract found for structure: ${structureId.trim()}`);
+      }
+    } catch (error) {
+      console.error(`[Payment] Error fetching smart contract for structure ${structureId}:`, error.message);
+      // Continue without contract link - payment can still be created
+    }
+  }
+
   // Create payment data
   const paymentData = {
     email: email.trim().toLowerCase(),
@@ -138,7 +156,7 @@ router.post('/', authenticate, handleDocumentUpload, catchAsync(async (req, res)
     mintTransactionHash: mintTransactionHash?.trim() || null,
     amount: amount.trim(),
     structureId: structureId.trim(),
-    contractId: contractId.trim(),
+    contractId: finalContractId, // Auto-linked to smart contract if exists
     status: status?.trim() || 'pending',
     tokenId: tokenId?.trim() || null,
     tokens: tokens ? parseInt(tokens, 10) : null,
