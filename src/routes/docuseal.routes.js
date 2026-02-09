@@ -826,7 +826,7 @@ router.get('/verifyUserSignature', authenticate, catchAsync(async (req, res) => 
     const submissionIdStr = String(submission.id); // Use submission.id instead of submission.submissionId
     const isUsed = usedSubmissionIds.has(submissionIdStr);
     console.log(`[verifyUserSignature] Checking submission ID ${submissionIdStr} (DocuSeal ID: ${submission.submissionId}): isUsed=${isUsed}`);
-    return !isUsed;
+    return !isUsed && submission.status == 'completed';
   });
 
   const hasFreeSubmission = freeSubmissions.length > 0;
