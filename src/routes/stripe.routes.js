@@ -189,6 +189,47 @@ router.post('/add-additional-service', authenticate, catchAsync(async (req, res)
 }));
 
 /**
+ * @route   POST /api/stripe/update-service-quantity
+ * @desc    Update quantity of Additional Service in subscription
+ * @access  Private
+ * @body    { subscriptionItemId: 'si_xxxxx', quantity: 2 }
+ */
+router.post('/update-service-quantity', authenticate, catchAsync(async (req, res) => {
+  const { subscriptionItemId, quantity } = req.body;
+  const user = await User.findById(req.user.id);
+
+  if (!user) {
+    return res.status(404).json({
+      success: false,
+      message: 'User not found'
+    });
+  }
+
+  if (!subscriptionItemId || !quantity) {
+    return res.status(400).json({
+      success: false,
+      message: 'subscriptionItemId and quantity are required'
+    });
+  }
+
+  if (quantity < 1) {
+    return res.status(400).json({
+      success: false,
+      message: 'Quantity must be at least 1. Use remove-service to remove the item.'
+    });
+  }
+
+  // Update Additional Service quantity
+  const updated = await stripeService.updateSubscriptionItemQuantity(subscriptionItemId, quantity);
+
+  res.json({
+    success: true,
+    subscriptionItem: updated,
+    message: `Additional Service quantity updated to ${quantity}. Prorated charges will apply.`
+  });
+}));
+
+/**
  * @route   POST /api/stripe/remove-service
  * @desc    Remove Additional Service from subscription
  * @access  Private

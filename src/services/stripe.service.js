@@ -87,12 +87,13 @@ class StripeService {
   }
 
   /**
-   * Add an addon to existing subscription
+   * Add an addon to existing subscription or increment quantity if it exists
    * @param {string} subscriptionId - Stripe subscription ID
    * @param {string} addonPriceId - Price ID of the addon to add
+   * @param {number} quantity - Quantity to add (default: 1)
    * @returns {Promise<Object>} Stripe subscription item object
    */
-  async addAddonToSubscription(subscriptionId, addonPriceId) {
+  async addAddonToSubscription(subscriptionId, addonPriceId, quantity = 1) {
     try {
       // Check if addon already exists in subscription
       const subscription = await stripe.subscriptions.retrieve(subscriptionId, {
@@ -104,22 +105,53 @@ class StripeService {
       );
 
       if (existingItem) {
-        console.log(`[Stripe] Addon ${addonPriceId} already exists in subscription ${subscriptionId}`);
-        return existingItem;
+        // Increment quantity if addon already exists
+        const newQuantity = existingItem.quantity + quantity;
+        const updatedItem = await stripe.subscriptionItems.update(existingItem.id, {
+          quantity: newQuantity,
+          proration_behavior: 'create_prorations'
+        });
+        console.log(`[Stripe] Updated addon ${addonPriceId} quantity to ${newQuantity} in subscription ${subscriptionId}`);
+        return updatedItem;
       }
 
       // Add new addon
       const subscriptionItem = await stripe.subscriptionItems.create({
         subscription: subscriptionId,
         price: addonPriceId,
-        quantity: 1,
+        quantity: quantity,
         proration_behavior: 'create_prorations' // Charge prorated amount immediately
       });
 
-      console.log(`[Stripe] Added addon ${addonPriceId} to subscription ${subscriptionId}`);
+      console.log(`[Stripe] Added addon ${addonPriceId} (quantity: ${quantity}) to subscription ${subscriptionId}`);
       return subscriptionItem;
     } catch (error) {
       console.error('[Stripe] Error adding addon:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Update quantity of a subscription item
+   * @param {string} subscriptionItemId - Stripe subscription item ID
+   * @param {number} quantity - New quantity (must be >= 1)
+   * @returns {Promise<Object>} Updated subscription item
+   */
+  async updateSubscriptionItemQuantity(subscriptionItemId, quantity) {
+    try {
+      if (quantity < 1) {
+        throw new Error('Quantity must be at least 1. Use removeAddonFromSubscription to remove the item.');
+      }
+
+      const updatedItem = await stripe.subscriptionItems.update(subscriptionItemId, {
+        quantity: quantity,
+        proration_behavior: 'create_prorations'
+      });
+
+      console.log(`[Stripe] Updated subscription item ${subscriptionItemId} quantity to ${quantity}`);
+      return updatedItem;
+    } catch (error) {
+      console.error('[Stripe] Error updating subscription item quantity:', error);
       throw error;
     }
   }
