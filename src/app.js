@@ -246,6 +246,10 @@ app.get('/api', (req, res) => {
         description: 'Smart contract interactions and blockchain queries',
         endpoints: '/api/blockchain',
       },
+      stripe: {
+        description: 'Subscription management and payment processing',
+        endpoints: '/api/stripe',
+      },
     },
     documentation: {
       health: 'GET /health',
@@ -293,6 +297,7 @@ app.listen(PORT, async () => {
   console.log(`   • Company: http://localhost:${PORT}/api/company`);
   console.log(`   • Notifications: http://localhost:${PORT}/api/notifications`);
   console.log(`   • Blockchain: http://localhost:${PORT}/api/blockchain`);
+  console.log(`   • Stripe: http://localhost:${PORT}/api/stripe`);
   console.log('=================================\n');
   
   await connectDB();
@@ -307,6 +312,7 @@ app.listen(PORT, async () => {
     console.log(`   • BRIDGE_API_KEY: ${process.env.BRIDGE_API_KEY ? '✓ Set' : '✗ Not set'}`);
     console.log(`   • JWT_SECRET: ${process.env.JWT_SECRET ? '✓ Set' : '✗ Not set'}`);
     console.log(`   • API_KEY: ${process.env.API_KEY ? '✓ Set' : '✗ Not set'}`);
+    console.log(`   • STRIPE_SECRET_KEY: ${process.env.STRIPE_SECRET_KEY ? '✓ Set' : '✗ Not set'}`);
     console.log('=================================\n');
   }
 });

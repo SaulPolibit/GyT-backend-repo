@@ -30,6 +30,9 @@ const emailDomainRoutes = require('./emailDomain.routes');
 // Payment routes
 const paymentRoutes = require('./payment.routes');
 
+// Stripe routes
+const stripeRoutes = require('./stripe.routes');
+
 // Subscription routes
 const subscriptionRoutes = require('./subscription.routes');
 
@@ -77,6 +80,9 @@ router.use('/email-domains', emailDomainRoutes); // For /api/email-domains/* rou
 // Mount Payment routes
 router.use('/payments', paymentRoutes);
 
+// Mount Stripe routes
+router.use('/stripe', stripeRoutes);
+
 // Mount Subscription routes
 router.use('/subscriptions', subscriptionRoutes);
 
@@ -123,6 +129,8 @@ router.get('/', (_req, res) => {
       emailDomains: '/api/email-domains',
       // Payment endpoints
       payments: '/api/payments',
+      // Stripe endpoints
+      stripe: '/api/stripe',
       // Subscription endpoints
       subscriptions: '/api/subscriptions',
       // Investment Subscription endpoints
