@@ -159,6 +159,26 @@ class User {
 
     if (error) {
       if (error.code === 'PGRST116') return null; // Not found
+
+      // Handle "Cannot coerce result to single JSON object" error (duplicate rows)
+      if (error.message && error.message.includes('JSON object')) {
+        console.error('⚠️  [User.findById] Multiple users found with same ID! This should not happen.');
+        console.error('⚠️  [User.findById] Falling back to first result. Please run fix_duplicate_users.sql migration!');
+
+        // Fallback: Get first result instead of using .single()
+        const { data: fallbackData, error: fallbackError } = await supabase
+          .from('users')
+          .select('*')
+          .eq('id', id)
+          .order('created_at', { ascending: true })
+          .limit(1);
+
+        if (fallbackError) throw fallbackError;
+        if (!fallbackData || fallbackData.length === 0) return null;
+
+        return this._toModel(fallbackData[0]);
+      }
+
       throw error;
     }
 
@@ -181,6 +201,26 @@ class User {
 
     if (error) {
       if (error.code === 'PGRST116') return null; // Not found
+
+      // Handle "Cannot coerce result to single JSON object" error (duplicate rows)
+      if (error.message && error.message.includes('JSON object')) {
+        console.error('⚠️  [User.findByEmail] Multiple users found with same email! This should not happen.');
+        console.error('⚠️  [User.findByEmail] Falling back to first result. Please run fix_duplicate_users.sql migration!');
+
+        // Fallback: Get first result instead of using .single()
+        const { data: fallbackData, error: fallbackError } = await supabase
+          .from('users')
+          .select('*')
+          .eq('email', email.toLowerCase())
+          .order('created_at', { ascending: true })
+          .limit(1);
+
+        if (fallbackError) throw fallbackError;
+        if (!fallbackData || fallbackData.length === 0) return null;
+
+        return this._toModel(fallbackData[0]);
+      }
+
       throw error;
     }
 
