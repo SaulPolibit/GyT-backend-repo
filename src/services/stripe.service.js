@@ -47,20 +47,26 @@ class StripeService {
    * Create a subscription with base plan and optional add-ons
    * @param {string} customerId - Stripe customer ID
    * @param {string} basePriceId - Price ID for base plan (e.g., price_xxxxx)
-   * @param {Array<string>} addonPriceIds - Array of addon price IDs
+   * @param {Array<{priceId: string, quantity: number}>|Array<string>} addons - Array of addon objects with priceId and quantity, or array of price IDs
    * @param {Object} options - Additional options (trial_period_days, etc.)
    * @returns {Promise<Object>} Stripe subscription object with clientSecret
    */
-  async createSubscription(customerId, basePriceId, addonPriceIds = [], options = {}) {
+  async createSubscription(customerId, basePriceId, addons = [], options = {}) {
     try {
       // Build subscription items: base plan + addons
       const items = [
         { price: basePriceId, quantity: 1 } // Base plan (required)
       ];
 
-      // Add optional addons
-      addonPriceIds.forEach(priceId => {
-        items.push({ price: priceId, quantity: 1 });
+      // Add optional addons (support both old format and new format with quantities)
+      addons.forEach(addon => {
+        if (typeof addon === 'string') {
+          // Old format: just price ID
+          items.push({ price: addon, quantity: 1 });
+        } else if (addon.priceId && addon.quantity > 0) {
+          // New format: object with priceId and quantity
+          items.push({ price: addon.priceId, quantity: addon.quantity });
+        }
       });
 
       const subscriptionData = {

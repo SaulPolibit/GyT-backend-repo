@@ -80,12 +80,13 @@ router.post('/create-customer', authenticate, catchAsync(async (req, res) => {
  * @desc    Create a new subscription with Service Base Cost and optional Additional Service
  * @access  Private
  * @body    {
- *            includeAdditionalService: true, // Optional - include Additional Service Base Cost
+ *            additionalServiceQuantity: 2, // Optional - quantity of Additional Service Base Cost (default: 0)
+ *            includeAdditionalService: true, // Optional - legacy boolean support
  *            trialDays: 7 // Optional trial period in days
  *          }
  */
 router.post('/create-subscription', authenticate, catchAsync(async (req, res) => {
-  const { includeAdditionalService = false, trialDays } = req.body;
+  const { additionalServiceQuantity, includeAdditionalService = false, trialDays } = req.body;
   const user = await User.findById(req.user.id);
 
   if (!user) {
@@ -116,10 +117,22 @@ router.post('/create-subscription', authenticate, catchAsync(async (req, res) =>
     }
   }
 
-  // Build service price IDs array
-  const servicePriceIds = [];
-  if (includeAdditionalService) {
-    servicePriceIds.push(PRICE_IDS.ADDITIONAL_SERVICE_COST);
+  // Build addons array with quantities
+  const addons = [];
+
+  // Support both new quantity-based approach and legacy boolean approach
+  let quantity = 0;
+  if (additionalServiceQuantity !== undefined) {
+    quantity = parseInt(additionalServiceQuantity) || 0;
+  } else if (includeAdditionalService) {
+    quantity = 1;
+  }
+
+  if (quantity > 0) {
+    addons.push({
+      priceId: PRICE_IDS.ADDITIONAL_SERVICE_COST,
+      quantity: quantity
+    });
   }
 
   // Create subscription options
@@ -132,7 +145,7 @@ router.post('/create-subscription', authenticate, catchAsync(async (req, res) =>
   const subscription = await stripeService.createSubscription(
     user.stripeCustomerId,
     PRICE_IDS.SERVICE_BASE_COST,
-    servicePriceIds,
+    addons,
     options
   );
 
