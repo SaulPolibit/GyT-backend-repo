@@ -124,11 +124,18 @@ app.use('/uploads', (req, res, next) => {
 }, express.static(path.join(__dirname, '../uploads')));
 
 // ===== BODY PARSING MIDDLEWARE =====
-// Parse JSON bodies
-app.use(express.json({
-  limit: '10mb',
-  strict: true,
-}));
+// Parse JSON bodies - EXCEPT for Stripe webhook route which needs raw body
+app.use((req, res, next) => {
+  if (req.originalUrl === '/api/stripe/webhook') {
+    // Skip JSON parsing for webhook route (needs raw body for signature verification)
+    next();
+  } else {
+    express.json({
+      limit: '10mb',
+      strict: true,
+    })(req, res, next);
+  }
+});
 
 // Parse URL-encoded bodies
 app.use(express.urlencoded({

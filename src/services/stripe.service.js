@@ -44,12 +44,62 @@ class StripeService {
   }
 
   /**
+   * Create payment method from card token
+   * @param {string} cardToken - Stripe card token (tok_xxxxx)
+   * @returns {Promise<Object>} Payment method object
+   */
+  async createPaymentMethodFromToken(cardToken) {
+    try {
+      const paymentMethod = await stripe.paymentMethods.create({
+        type: 'card',
+        card: {
+          token: cardToken,
+        },
+      });
+
+      console.log(`[Stripe] Created payment method ${paymentMethod.id} from token`);
+      return paymentMethod;
+    } catch (error) {
+      console.error('[Stripe] Error creating payment method from token:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Attach payment method to customer and set as default
+   * @param {string} paymentMethodId - Stripe payment method ID
+   * @param {string} customerId - Stripe customer ID
+   * @returns {Promise<Object>} Payment method object
+   */
+  async attachPaymentMethodToCustomer(paymentMethodId, customerId) {
+    try {
+      // Attach payment method to customer
+      const paymentMethod = await stripe.paymentMethods.attach(paymentMethodId, {
+        customer: customerId,
+      });
+
+      // Set as default payment method for invoices
+      await stripe.customers.update(customerId, {
+        invoice_settings: {
+          default_payment_method: paymentMethodId,
+        },
+      });
+
+      console.log(`[Stripe] Attached payment method ${paymentMethodId} to customer ${customerId}`);
+      return paymentMethod;
+    } catch (error) {
+      console.error('[Stripe] Error attaching payment method:', error);
+      throw error;
+    }
+  }
+
+  /**
    * Create a subscription with base plan and optional add-ons
    * @param {string} customerId - Stripe customer ID
    * @param {string} basePriceId - Price ID for base plan (e.g., price_xxxxx)
    * @param {Array<{priceId: string, quantity: number}>|Array<string>} addons - Array of addon objects with priceId and quantity, or array of price IDs
-   * @param {Object} options - Additional options (trial_period_days, etc.)
-   * @returns {Promise<Object>} Stripe subscription object with clientSecret
+   * @param {Object} options - Additional options (trial_period_days, default_payment_method, etc.)
+   * @returns {Promise<Object>} Stripe subscription object
    */
   async createSubscription(customerId, basePriceId, addons = [], options = {}) {
     try {
@@ -69,46 +119,52 @@ class StripeService {
         }
       });
 
+      // Build subscription data
       const subscriptionData = {
         customer: customerId,
         items: items,
-        payment_behavior: 'default_incomplete',
-        payment_settings: {
-          save_default_payment_method: 'on_subscription'
-        },
         expand: ['latest_invoice.payment_intent'],
-        ...options // trial_period_days, etc.
+        ...options // trial_period_days, default_payment_method, etc.
       };
+
+      // If no default_payment_method provided, use default_incomplete behavior
+      if (!options.default_payment_method) {
+        subscriptionData.payment_behavior = 'default_incomplete';
+        subscriptionData.payment_settings = {
+          save_default_payment_method: 'on_subscription'
+        };
+      }
 
       const subscription = await stripe.subscriptions.create(subscriptionData);
 
       console.log(`[Stripe] Created subscription ${subscription.id} for customer ${customerId}`);
       console.log(`[Stripe] Subscription status:`, subscription.status);
       console.log(`[Stripe] Subscription items:`, items.length);
+      console.log(`[Stripe] Has default payment method:`, !!options.default_payment_method);
 
-      // Check if latest_invoice is an object or just an ID
-      const latestInvoiceId = typeof subscription.latest_invoice === 'string'
-        ? subscription.latest_invoice
-        : subscription.latest_invoice?.id;
-
-      console.log(`[Stripe] Latest invoice ID:`, latestInvoiceId || 'None');
-
-      // If we have an invoice ID but no expanded object, fetch it explicitly
-      if (latestInvoiceId && typeof subscription.latest_invoice === 'string') {
-        console.log(`[Stripe] Fetching invoice ${latestInvoiceId} explicitly...`);
-        const invoice = await stripe.invoices.retrieve(latestInvoiceId, {
-          expand: ['payment_intent']
-        });
-
-        // Attach the full invoice object to subscription for consistent access
-        subscription.latest_invoice = invoice;
-        console.log(`[Stripe] Payment intent ID:`, invoice.payment_intent?.id || 'None');
-        console.log(`[Stripe] Client secret present:`, !!invoice.payment_intent?.client_secret);
-      } else if (subscription.latest_invoice?.payment_intent) {
-        console.log(`[Stripe] Payment intent ID:`, subscription.latest_invoice.payment_intent?.id || 'None');
-        console.log(`[Stripe] Client secret present:`, !!subscription.latest_invoice.payment_intent?.client_secret);
+      // If we have a default_payment_method, subscription should charge automatically
+      // No need to manually handle invoices or payment intents
+      if (options.default_payment_method) {
+        console.log(`[Stripe] Subscription created with payment method. Status should be 'active' or 'incomplete' if payment failed.`);
       } else {
-        console.log(`[Stripe] No payment intent found (subscription may be in trial or already paid)`);
+        // Legacy flow: no payment method, need to handle payment intent manually
+        const latestInvoiceId = typeof subscription.latest_invoice === 'string'
+          ? subscription.latest_invoice
+          : subscription.latest_invoice?.id;
+
+        console.log(`[Stripe] Latest invoice ID:`, latestInvoiceId || 'None');
+
+        if (latestInvoiceId) {
+          // Fetch invoice with payment intent
+          const invoice = await stripe.invoices.retrieve(latestInvoiceId, {
+            expand: ['payment_intent']
+          });
+
+          subscription.latest_invoice = invoice;
+          console.log(`[Stripe] Invoice status:`, invoice.status);
+          console.log(`[Stripe] Payment intent ID:`, invoice.payment_intent?.id || 'None');
+          console.log(`[Stripe] Client secret present:`, !!invoice.payment_intent?.client_secret);
+        }
       }
 
       return subscription;
@@ -127,6 +183,17 @@ class StripeService {
    */
   async addAddonToSubscription(subscriptionId, addonPriceId, quantity = 1) {
     try {
+      // Retrieve the price to check if it's metered
+      const price = await stripe.prices.retrieve(addonPriceId);
+
+      if (price.recurring?.usage_type === 'metered') {
+        throw new Error(
+          'Cannot add metered price with fixed quantity. ' +
+          'Please recreate the price as a standard recurring price (usage_type: licensed). ' +
+          'Use POST /api/stripe/create-products to recreate products correctly.'
+        );
+      }
+
       // Check if addon already exists in subscription
       const subscription = await stripe.subscriptions.retrieve(subscriptionId, {
         expand: ['items.data.price']
@@ -173,6 +240,19 @@ class StripeService {
     try {
       if (quantity < 1) {
         throw new Error('Quantity must be at least 1. Use removeAddonFromSubscription to remove the item.');
+      }
+
+      // Retrieve the subscription item to check the price type
+      const item = await stripe.subscriptionItems.retrieve(subscriptionItemId, {
+        expand: ['price']
+      });
+
+      if (item.price.recurring?.usage_type === 'metered') {
+        throw new Error(
+          'Cannot set quantity for metered prices. ' +
+          'Please recreate the price as a standard recurring price (usage_type: licensed). ' +
+          'Use POST /api/stripe/create-products to recreate products correctly.'
+        );
       }
 
       const updatedItem = await stripe.subscriptionItems.update(subscriptionItemId, {
@@ -383,9 +463,12 @@ class StripeService {
 
       const serviceBasePrice = await stripe.prices.create({
         product: serviceBaseCost.id,
-        unit_amount: 2000, // $20.00 in cents (adjust as needed)
-        currency: 'usd',
-        recurring: { interval: 'month' }
+        unit_amount: 2000, // 20.00 MXN in centavos (adjust as needed)
+        currency: 'mxn', // Mexican Pesos
+        recurring: {
+          interval: 'month',
+          usage_type: 'licensed' // NOT metered - standard recurring
+        }
       });
 
       // Additional Service Base Cost
@@ -400,8 +483,11 @@ class StripeService {
       const additionalServicePrice = await stripe.prices.create({
         product: additionalServiceCost.id,
         unit_amount: 1000, // $10.00 in cents (adjust as needed)
-        currency: 'usd',
-        recurring: { interval: 'month' }
+        currency: 'mxn', // Mexican Pesos
+        recurring: {
+          interval: 'month',
+          usage_type: 'licensed' // NOT metered - supports fixed quantities
+        }
       });
 
       console.log('[Stripe] Created products successfully!');

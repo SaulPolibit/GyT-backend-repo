@@ -80,19 +80,28 @@ router.post('/create-customer', authenticate, catchAsync(async (req, res) => {
  * @desc    Create a new subscription with Service Base Cost and optional Additional Service
  * @access  Private
  * @body    {
+ *            cardToken: 'tok_xxxxx', // Required - Stripe card token (backend creates payment method)
  *            additionalServiceQuantity: 2, // Optional - quantity of Additional Service Base Cost (default: 0)
  *            includeAdditionalService: true, // Optional - legacy boolean support
  *            trialDays: 7 // Optional trial period in days
  *          }
  */
 router.post('/create-subscription', authenticate, catchAsync(async (req, res) => {
-  const { additionalServiceQuantity, includeAdditionalService = false, trialDays } = req.body;
+  const { cardToken, additionalServiceQuantity, includeAdditionalService = false, trialDays } = req.body;
   const user = await User.findById(req.user.id);
 
   if (!user) {
     return res.status(404).json({
       success: false,
       message: 'User not found'
+    });
+  }
+
+  // Validate card token
+  if (!cardToken) {
+    return res.status(400).json({
+      success: false,
+      message: 'Card token is required. Please provide a valid card token.'
     });
   }
 
@@ -103,6 +112,14 @@ router.post('/create-subscription', authenticate, catchAsync(async (req, res) =>
       message: 'Please create a customer first. Call POST /api/stripe/create-customer'
     });
   }
+
+  // Create payment method from card token
+  console.log(`[Stripe Routes] Creating payment method from card token`);
+  const paymentMethod = await stripeService.createPaymentMethodFromToken(cardToken);
+
+  // Attach payment method to customer and set as default
+  console.log(`[Stripe Routes] Attaching payment method ${paymentMethod.id} to customer ${user.stripeCustomerId}`);
+  await stripeService.attachPaymentMethodToCustomer(paymentMethod.id, user.stripeCustomerId);
 
   // Check if user already has an active subscription
   if (user.stripeSubscriptionId) {
@@ -136,12 +153,16 @@ router.post('/create-subscription', authenticate, catchAsync(async (req, res) =>
   }
 
   // Create subscription options
-  const options = {};
+  const options = {
+    default_payment_method: paymentMethod.id // Set payment method for immediate charge
+  };
+
   if (trialDays && trialDays > 0) {
     options.trial_period_days = trialDays;
   }
 
   // Create subscription with Service Base Cost + optional Additional Service
+  console.log(`[Stripe Routes] Creating subscription with payment method ${paymentMethod.id}`);
   const subscription = await stripeService.createSubscription(
     user.stripeCustomerId,
     PRICE_IDS.SERVICE_BASE_COST,
@@ -155,29 +176,27 @@ router.post('/create-subscription', authenticate, catchAsync(async (req, res) =>
     subscriptionStatus: subscription.status
   });
 
-  const clientSecret = subscription.latest_invoice?.payment_intent?.client_secret;
-
   console.log('[Stripe Routes] Subscription created:', {
     subscriptionId: subscription.id,
     status: subscription.status,
-    hasClientSecret: !!clientSecret,
     latestInvoice: subscription.latest_invoice?.id,
     paymentIntent: subscription.latest_invoice?.payment_intent?.id
   });
 
-  if (!clientSecret) {
-    console.warn('[Stripe Routes] No client secret found for subscription:', subscription.id);
-    console.warn('[Stripe Routes] Latest invoice:', JSON.stringify(subscription.latest_invoice, null, 2));
+  // With payment method attached, subscription should charge immediately
+  // Status will be 'active' if successful, 'incomplete' if payment failed
+  let message = 'Subscription created successfully!';
+  if (subscription.status === 'active') {
+    message = 'Subscription created and payment successful!';
+  } else if (subscription.status === 'incomplete') {
+    message = 'Subscription created but payment failed. Please check your payment method.';
   }
 
   res.json({
     success: true,
     subscriptionId: subscription.id,
-    clientSecret: clientSecret || null,
     status: subscription.status,
-    message: clientSecret
-      ? 'Subscription created successfully. Use clientSecret to complete payment.'
-      : 'Subscription created but no payment required (may be in trial or already paid).'
+    message: message
   });
 }));
 
