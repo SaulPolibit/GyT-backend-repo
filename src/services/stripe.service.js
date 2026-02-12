@@ -83,7 +83,33 @@ class StripeService {
       const subscription = await stripe.subscriptions.create(subscriptionData);
 
       console.log(`[Stripe] Created subscription ${subscription.id} for customer ${customerId}`);
+      console.log(`[Stripe] Subscription status:`, subscription.status);
       console.log(`[Stripe] Subscription items:`, items.length);
+
+      // Check if latest_invoice is an object or just an ID
+      const latestInvoiceId = typeof subscription.latest_invoice === 'string'
+        ? subscription.latest_invoice
+        : subscription.latest_invoice?.id;
+
+      console.log(`[Stripe] Latest invoice ID:`, latestInvoiceId || 'None');
+
+      // If we have an invoice ID but no expanded object, fetch it explicitly
+      if (latestInvoiceId && typeof subscription.latest_invoice === 'string') {
+        console.log(`[Stripe] Fetching invoice ${latestInvoiceId} explicitly...`);
+        const invoice = await stripe.invoices.retrieve(latestInvoiceId, {
+          expand: ['payment_intent']
+        });
+
+        // Attach the full invoice object to subscription for consistent access
+        subscription.latest_invoice = invoice;
+        console.log(`[Stripe] Payment intent ID:`, invoice.payment_intent?.id || 'None');
+        console.log(`[Stripe] Client secret present:`, !!invoice.payment_intent?.client_secret);
+      } else if (subscription.latest_invoice?.payment_intent) {
+        console.log(`[Stripe] Payment intent ID:`, subscription.latest_invoice.payment_intent?.id || 'None');
+        console.log(`[Stripe] Client secret present:`, !!subscription.latest_invoice.payment_intent?.client_secret);
+      } else {
+        console.log(`[Stripe] No payment intent found (subscription may be in trial or already paid)`);
+      }
 
       return subscription;
     } catch (error) {

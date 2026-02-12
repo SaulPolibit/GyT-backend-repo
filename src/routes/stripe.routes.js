@@ -155,12 +155,29 @@ router.post('/create-subscription', authenticate, catchAsync(async (req, res) =>
     subscriptionStatus: subscription.status
   });
 
+  const clientSecret = subscription.latest_invoice?.payment_intent?.client_secret;
+
+  console.log('[Stripe Routes] Subscription created:', {
+    subscriptionId: subscription.id,
+    status: subscription.status,
+    hasClientSecret: !!clientSecret,
+    latestInvoice: subscription.latest_invoice?.id,
+    paymentIntent: subscription.latest_invoice?.payment_intent?.id
+  });
+
+  if (!clientSecret) {
+    console.warn('[Stripe Routes] No client secret found for subscription:', subscription.id);
+    console.warn('[Stripe Routes] Latest invoice:', JSON.stringify(subscription.latest_invoice, null, 2));
+  }
+
   res.json({
     success: true,
     subscriptionId: subscription.id,
-    clientSecret: subscription.latest_invoice?.payment_intent?.client_secret,
+    clientSecret: clientSecret || null,
     status: subscription.status,
-    message: 'Subscription created successfully. Use clientSecret to complete payment.'
+    message: clientSecret
+      ? 'Subscription created successfully. Use clientSecret to complete payment.'
+      : 'Subscription created but no payment required (may be in trial or already paid).'
   });
 }));
 
