@@ -686,4 +686,595 @@ router.get('/products', catchAsync(async (req, res) => {
   });
 }));
 
+// ==========================================
+// STRIPE CONNECT ROUTES (for Investors - role 3)
+// ==========================================
+
+/**
+ * @route   POST /api/stripe/connect/create-account
+ * @desc    Create a Stripe Connect account for an investor
+ * @access  Private (Investors only - role 3)
+ */
+router.post('/connect/create-account', authenticate, catchAsync(async (req, res) => {
+  const user = await User.findById(req.user.id);
+
+  if (!user) {
+    return res.status(404).json({
+      success: false,
+      message: 'User not found'
+    });
+  }
+
+  // Only investors (role 3) can create Connect accounts
+  if (user.role !== 3) {
+    return res.status(403).json({
+      success: false,
+      message: 'Only investors can create Stripe Connect accounts'
+    });
+  }
+
+  // Check if user already has a Connect account
+  if (user.stripeAccountId) {
+    console.log(`[Stripe Connect Routes] User ${user.id} already has account: ${user.stripeAccountId}`);
+    return res.json({
+      success: true,
+      accountId: user.stripeAccountId,
+      message: 'Connect account already exists'
+    });
+  }
+
+  // Create Stripe Connect account
+  const account = await stripeService.createConnectAccount(user);
+
+  // Save account ID to user record
+  await User.findByIdAndUpdate(user.id, {
+    stripeAccountId: account.id,
+    stripeAccountStatus: 'pending',
+    stripeOnboardingComplete: false
+  });
+
+  res.json({
+    success: true,
+    accountId: account.id,
+    message: 'Stripe Connect account created successfully'
+  });
+}));
+
+/**
+ * @route   POST /api/stripe/connect/onboarding-link
+ * @desc    Create an onboarding link for Stripe Connect
+ * @access  Private (Investors only - role 3)
+ * @body    { returnUrl: 'https://...', refreshUrl: 'https://...' }
+ */
+router.post('/connect/onboarding-link', authenticate, catchAsync(async (req, res) => {
+  const { returnUrl, refreshUrl } = req.body;
+  const user = await User.findById(req.user.id);
+
+  if (!user) {
+    return res.status(404).json({
+      success: false,
+      message: 'User not found'
+    });
+  }
+
+  // Only investors (role 3) can access Connect
+  if (user.role !== 3) {
+    return res.status(403).json({
+      success: false,
+      message: 'Only investors can access Stripe Connect'
+    });
+  }
+
+  // Check if user has a Connect account
+  if (!user.stripeAccountId) {
+    return res.status(400).json({
+      success: false,
+      message: 'No Connect account found. Please create an account first.'
+    });
+  }
+
+  // Default URLs if not provided
+  const baseUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+  const finalReturnUrl = returnUrl || `${baseUrl}/investor/settings?tab=payments&onboarding=complete`;
+  const finalRefreshUrl = refreshUrl || `${baseUrl}/investor/settings?tab=payments&onboarding=refresh`;
+
+  // Create onboarding link
+  const accountLink = await stripeService.createAccountLink(
+    user.stripeAccountId,
+    finalRefreshUrl,
+    finalReturnUrl
+  );
+
+  res.json({
+    success: true,
+    url: accountLink.url,
+    expiresAt: accountLink.expires_at,
+    message: 'Onboarding link created successfully'
+  });
+}));
+
+/**
+ * @route   GET /api/stripe/connect/account-status
+ * @desc    Get Stripe Connect account status
+ * @access  Private (Investors only - role 3)
+ */
+router.get('/connect/account-status', authenticate, catchAsync(async (req, res) => {
+  const user = await User.findById(req.user.id);
+
+  if (!user) {
+    return res.status(404).json({
+      success: false,
+      message: 'User not found'
+    });
+  }
+
+  // Only investors (role 3) can access Connect
+  if (user.role !== 3) {
+    return res.status(403).json({
+      success: false,
+      message: 'Only investors can access Stripe Connect'
+    });
+  }
+
+  // Check if user has a Connect account
+  if (!user.stripeAccountId) {
+    return res.json({
+      success: true,
+      hasAccount: false,
+      status: 'not_created',
+      message: 'No Connect account found'
+    });
+  }
+
+  // Get account status from Stripe
+  const status = await stripeService.checkConnectAccountStatus(user.stripeAccountId);
+
+  // Update user record if status changed
+  if (status.isComplete !== user.stripeOnboardingComplete || status.accountStatus !== user.stripeAccountStatus) {
+    await User.findByIdAndUpdate(user.id, {
+      stripeOnboardingComplete: status.isComplete,
+      stripeAccountStatus: status.accountStatus
+    });
+  }
+
+  res.json({
+    success: true,
+    hasAccount: true,
+    accountId: user.stripeAccountId,
+    ...status
+  });
+}));
+
+/**
+ * @route   GET /api/stripe/connect/dashboard-link
+ * @desc    Get a link to the Stripe Connect Express dashboard
+ * @access  Private (Investors only - role 3)
+ */
+router.get('/connect/dashboard-link', authenticate, catchAsync(async (req, res) => {
+  const user = await User.findById(req.user.id);
+
+  if (!user) {
+    return res.status(404).json({
+      success: false,
+      message: 'User not found'
+    });
+  }
+
+  // Only investors (role 3) can access Connect
+  if (user.role !== 3) {
+    return res.status(403).json({
+      success: false,
+      message: 'Only investors can access Stripe Connect'
+    });
+  }
+
+  // Check if user has a Connect account
+  if (!user.stripeAccountId) {
+    return res.status(400).json({
+      success: false,
+      message: 'No Connect account found'
+    });
+  }
+
+  // Check if onboarding is complete
+  if (!user.stripeOnboardingComplete) {
+    return res.status(400).json({
+      success: false,
+      message: 'Please complete onboarding first'
+    });
+  }
+
+  // Create dashboard login link
+  const loginLink = await stripeService.createConnectDashboardLink(user.stripeAccountId);
+
+  res.json({
+    success: true,
+    url: loginLink.url,
+    message: 'Dashboard link created successfully'
+  });
+}));
+
+/**
+ * @route   GET /api/stripe/connect/balance
+ * @desc    Get Stripe Connect account balance
+ * @access  Private (Investors only - role 3)
+ */
+router.get('/connect/balance', authenticate, catchAsync(async (req, res) => {
+  const user = await User.findById(req.user.id);
+
+  if (!user) {
+    return res.status(404).json({
+      success: false,
+      message: 'User not found'
+    });
+  }
+
+  // Only investors (role 3) can access Connect
+  if (user.role !== 3) {
+    return res.status(403).json({
+      success: false,
+      message: 'Only investors can access Stripe Connect'
+    });
+  }
+
+  // Check if user has a Connect account
+  if (!user.stripeAccountId) {
+    return res.status(400).json({
+      success: false,
+      message: 'No Connect account found'
+    });
+  }
+
+  // Get account balance
+  const balance = await stripeService.getConnectAccountBalance(user.stripeAccountId);
+
+  res.json({
+    success: true,
+    balance: balance
+  });
+}));
+
+// ==========================================
+// ADMIN ROUTES (for Fund Managers)
+// ==========================================
+
+/**
+ * @route   GET /api/stripe/connect/admin/status/:investorId
+ * @desc    Get Stripe Connect status for a specific investor (admin)
+ * @access  Private (Fund Managers - role 1 or 2)
+ */
+router.get('/connect/admin/status/:investorId', authenticate, catchAsync(async (req, res) => {
+  const adminUser = await User.findById(req.user.id);
+
+  // Only fund managers (role 1 or 2) can access admin routes
+  if (!adminUser || (adminUser.role !== 1 && adminUser.role !== 2)) {
+    return res.status(403).json({
+      success: false,
+      message: 'Admin access required'
+    });
+  }
+
+  const { investorId } = req.params;
+  const investor = await User.findById(investorId);
+
+  if (!investor) {
+    return res.status(404).json({
+      success: false,
+      message: 'Investor not found'
+    });
+  }
+
+  // Check if investor has a Connect account
+  if (!investor.stripeAccountId) {
+    return res.json({
+      success: true,
+      hasAccount: false,
+      accountStatus: 'not_created',
+      message: 'No Connect account found'
+    });
+  }
+
+  // Get account status from Stripe
+  const status = await stripeService.checkConnectAccountStatus(investor.stripeAccountId);
+
+  res.json({
+    success: true,
+    hasAccount: true,
+    investorId: investor.id,
+    accountId: investor.stripeAccountId,
+    ...status
+  });
+}));
+
+/**
+ * @route   POST /api/stripe/connect/admin/send-invite/:investorId
+ * @desc    Send Stripe Connect onboarding invite to investor
+ * @access  Private (Fund Managers - role 1 or 2)
+ */
+router.post('/connect/admin/send-invite/:investorId', authenticate, catchAsync(async (req, res) => {
+  const adminUser = await User.findById(req.user.id);
+
+  // Only fund managers (role 1 or 2) can access admin routes
+  if (!adminUser || (adminUser.role !== 1 && adminUser.role !== 2)) {
+    return res.status(403).json({
+      success: false,
+      message: 'Admin access required'
+    });
+  }
+
+  const { investorId } = req.params;
+  const investor = await User.findById(investorId);
+
+  if (!investor) {
+    return res.status(404).json({
+      success: false,
+      message: 'Investor not found'
+    });
+  }
+
+  // Create Connect account if not exists
+  let accountId = investor.stripeAccountId;
+  if (!accountId) {
+    const account = await stripeService.createConnectAccount(investor);
+    accountId = account.id;
+
+    // Save account ID to investor record
+    await User.findByIdAndUpdate(investor.id, {
+      stripeAccountId: account.id,
+      stripeAccountStatus: 'pending',
+      stripeOnboardingComplete: false
+    });
+  }
+
+  // Create onboarding link
+  const baseUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+  const accountLink = await stripeService.createAccountLink(
+    accountId,
+    `${baseUrl}/lp-portal/settings?tab=payment&onboarding=refresh`,
+    `${baseUrl}/lp-portal/settings?tab=payment&onboarding=complete`
+  );
+
+  // TODO: Send email with onboarding link using your email service
+  console.log(`[Stripe Connect Admin] Onboarding link for ${investor.email}: ${accountLink.url}`);
+
+  res.json({
+    success: true,
+    message: 'Onboarding invite prepared',
+    onboardingUrl: accountLink.url,
+    expiresAt: accountLink.expires_at,
+    investorEmail: investor.email
+  });
+}));
+
+/**
+ * @route   GET /api/stripe/connect/admin/investors
+ * @desc    Get all investors with their Stripe Connect status
+ * @access  Private (Fund Managers - role 1 or 2)
+ */
+router.get('/connect/admin/investors', authenticate, catchAsync(async (req, res) => {
+  const adminUser = await User.findById(req.user.id);
+
+  // Only fund managers (role 1 or 2) can access admin routes
+  if (!adminUser || (adminUser.role !== 1 && adminUser.role !== 2)) {
+    return res.status(403).json({
+      success: false,
+      message: 'Admin access required'
+    });
+  }
+
+  // Get all investors (role 3)
+  const investors = await User.findAll({ role: 3 });
+
+  const investorsWithStatus = investors.map(investor => ({
+    id: investor.id,
+    name: investor.name || `${investor.firstName} ${investor.lastName}`,
+    email: investor.email,
+    stripeAccountId: investor.stripeAccountId,
+    stripeOnboardingComplete: investor.stripeOnboardingComplete,
+    stripeAccountStatus: investor.stripeAccountStatus || 'not_created'
+  }));
+
+  res.json({
+    success: true,
+    data: investorsWithStatus,
+    total: investorsWithStatus.length,
+    withAccount: investorsWithStatus.filter(i => i.stripeAccountId).length,
+    onboardingComplete: investorsWithStatus.filter(i => i.stripeOnboardingComplete).length
+  });
+}));
+
+// ==========================================
+// STRIPE CONNECT WEBHOOK
+// Separate endpoint for Connect events
+// ==========================================
+
+/**
+ * @route   POST /api/stripe/webhook-connect
+ * @desc    Handle Stripe Connect webhook events
+ * @access  Public (Stripe only - verified by signature)
+ *
+ * Configure in Stripe Dashboard:
+ * - Endpoint URL: https://your-domain.com/api/stripe/webhook-connect
+ * - Events: account.*, transfer.*, payout.*, capability.updated
+ */
+router.post('/webhook-connect', catchAsync(async (req, res) => {
+  const signature = req.headers['stripe-signature'];
+
+  if (!signature) {
+    console.error('[Stripe Connect Webhook] Missing stripe-signature header');
+    return res.status(400).json({ error: 'Missing signature' });
+  }
+
+  let event;
+
+  try {
+    // Verify webhook signature using Connect-specific method
+    event = stripeService.verifyConnectWebhookSignature(req.body, signature);
+  } catch (error) {
+    console.error('[Stripe Connect Webhook] Signature verification failed:', error.message);
+    return res.status(400).json({ error: `Webhook signature verification failed: ${error.message}` });
+  }
+
+  console.log(`[Stripe Connect Webhook] Received event: ${event.type}`);
+
+  try {
+    switch (event.type) {
+      // ==========================================
+      // ACCOUNT EVENTS
+      // ==========================================
+
+      case 'account.updated': {
+        const account = event.data.object;
+        console.log(`[Stripe Connect Webhook] Account updated: ${account.id}`);
+
+        // Determine account status
+        let accountStatus = 'pending';
+        let onboardingComplete = false;
+
+        if (account.details_submitted && account.charges_enabled && account.payouts_enabled) {
+          accountStatus = 'enabled';
+          onboardingComplete = true;
+        } else if (account.requirements?.disabled_reason) {
+          accountStatus = 'disabled';
+        } else if (account.requirements?.currently_due?.length > 0) {
+          accountStatus = 'pending';
+        }
+
+        // Find user with this Connect account
+        const user = await User.findOne({ stripeAccountId: account.id });
+
+        if (user) {
+          await User.findByIdAndUpdate(user.id, {
+            stripeOnboardingComplete: onboardingComplete,
+            stripeAccountStatus: accountStatus
+          });
+          console.log(`[Stripe Connect Webhook] Updated user ${user.id} - status: ${accountStatus}, onboarding: ${onboardingComplete}`);
+        } else {
+          console.warn(`[Stripe Connect Webhook] No user found with Connect account ID: ${account.id}`);
+        }
+        break;
+      }
+
+      case 'account.application.deauthorized': {
+        const account = event.data.object;
+        console.log(`[Stripe Connect Webhook] Account deauthorized: ${account.id}`);
+
+        const user = await User.findOne({ stripeAccountId: account.id });
+        if (user) {
+          await User.findByIdAndUpdate(user.id, {
+            stripeAccountId: null,
+            stripeOnboardingComplete: false,
+            stripeAccountStatus: 'not_created'
+          });
+          console.log(`[Stripe Connect Webhook] Cleared Connect account for user ${user.id}`);
+        }
+        break;
+      }
+
+      // ==========================================
+      // EXTERNAL ACCOUNT EVENTS (Bank accounts)
+      // ==========================================
+
+      case 'account.external_account.created':
+      case 'account.external_account.deleted':
+      case 'account.external_account.updated': {
+        const externalAccount = event.data.object;
+        const accountId = event.account;
+        console.log(`[Stripe Connect Webhook] External account ${event.type.split('.').pop()} for ${accountId}: ${externalAccount.id}`);
+        break;
+      }
+
+      // ==========================================
+      // TRANSFER EVENTS (Platform to Connected Account)
+      // ==========================================
+
+      case 'transfer.created': {
+        const transfer = event.data.object;
+        console.log(`[Stripe Connect Webhook] Transfer created: ${transfer.id} to ${transfer.destination} for ${transfer.amount} ${transfer.currency}`);
+        break;
+      }
+
+      case 'transfer.failed': {
+        const transfer = event.data.object;
+        console.error(`[Stripe Connect Webhook] Transfer failed: ${transfer.id}`);
+        break;
+      }
+
+      case 'transfer.reversed': {
+        const transfer = event.data.object;
+        console.warn(`[Stripe Connect Webhook] Transfer reversed: ${transfer.id}`);
+        break;
+      }
+
+      // ==========================================
+      // PAYOUT EVENTS (Connected Account to Bank)
+      // ==========================================
+
+      case 'payout.created': {
+        const payout = event.data.object;
+        const accountId = event.account;
+        console.log(`[Stripe Connect Webhook] Payout created for ${accountId}: ${payout.id} - ${payout.amount} ${payout.currency}`);
+        break;
+      }
+
+      case 'payout.paid': {
+        const payout = event.data.object;
+        const accountId = event.account;
+        console.log(`[Stripe Connect Webhook] Payout paid for ${accountId}: ${payout.id}`);
+
+        const user = await User.findOne({ stripeAccountId: accountId });
+        if (user) {
+          console.log(`[Stripe Connect Webhook] Payout completed for user ${user.id}: ${payout.amount / 100} ${payout.currency.toUpperCase()}`);
+        }
+        break;
+      }
+
+      case 'payout.failed': {
+        const payout = event.data.object;
+        const accountId = event.account;
+        console.error(`[Stripe Connect Webhook] Payout failed for ${accountId}: ${payout.id} - ${payout.failure_message}`);
+
+        const user = await User.findOne({ stripeAccountId: accountId });
+        if (user) {
+          console.error(`[Stripe Connect Webhook] Payout failed for user ${user.id}: ${payout.failure_message}`);
+        }
+        break;
+      }
+
+      // ==========================================
+      // CAPABILITY EVENTS
+      // ==========================================
+
+      case 'capability.updated': {
+        const capability = event.data.object;
+        const accountId = event.account;
+        console.log(`[Stripe Connect Webhook] Capability updated for ${accountId}: ${capability.id} - ${capability.status}`);
+        break;
+      }
+
+      default:
+        console.log(`[Stripe Connect Webhook] Unhandled event type: ${event.type}`);
+    }
+
+    res.status(200).json({ received: true, type: event.type });
+
+  } catch (error) {
+    console.error(`[Stripe Connect Webhook] Error processing event ${event.type}:`, error);
+    res.status(200).json({ received: true, error: error.message });
+  }
+}));
+
+/**
+ * @route   GET /api/stripe/webhook-connect/health
+ * @desc    Health check for Connect webhook endpoint
+ * @access  Public
+ */
+router.get('/webhook-connect/health', (req, res) => {
+  res.json({
+    status: 'ok',
+    endpoint: 'stripe-connect-webhook',
+    timestamp: new Date().toISOString()
+  });
+});
+
 module.exports = router;

@@ -1,8 +1,16 @@
 /**
  * Stripe Service
- * Handles all Stripe API operations for subscriptions
+ * Handles all Stripe API operations for subscriptions and Connect
  */
+
+// Stripe instance for Subscriptions (Fund Manager billing)
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
+
+// Stripe instance for Connect (Investor payouts)
+// Uses separate key if provided, otherwise falls back to main key
+const stripeConnect = require('stripe')(
+  process.env.STRIPE_CONNECT_SECRET_KEY || process.env.STRIPE_SECRET_KEY
+);
 
 class StripeService {
   /**
@@ -538,6 +546,231 @@ class StripeService {
       return event;
     } catch (error) {
       console.error('[Stripe] Webhook signature verification failed:', error.message);
+      throw error;
+    }
+  }
+
+  // ==========================================
+  // STRIPE CONNECT METHODS (for Investors)
+  // Uses separate stripeConnect instance
+  // ==========================================
+
+  /**
+   * Create a Stripe Connect Express account for an investor
+   * @param {Object} user - User object with email, firstName, lastName, id, country
+   * @returns {Promise<Object>} Stripe Connect account object
+   */
+  async createConnectAccount(user) {
+    try {
+      const account = await stripeConnect.accounts.create({
+        type: 'express',
+        country: user.country || 'MX', // Default to Mexico
+        email: user.email,
+        capabilities: {
+          card_payments: { requested: true },
+          transfers: { requested: true },
+        },
+        business_type: 'individual',
+        individual: {
+          email: user.email,
+          first_name: user.firstName,
+          last_name: user.lastName,
+        },
+        metadata: {
+          userId: user.id,
+          role: 'investor'
+        }
+      });
+
+      console.log(`[Stripe Connect] Created account ${account.id} for user ${user.id}`);
+      return account;
+    } catch (error) {
+      console.error('[Stripe Connect] Error creating account:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Create an account onboarding link for Stripe Connect
+   * @param {string} accountId - Stripe Connect account ID
+   * @param {string} refreshUrl - URL to redirect if link expires
+   * @param {string} returnUrl - URL to redirect after completion
+   * @returns {Promise<Object>} Account link object with URL
+   */
+  async createAccountLink(accountId, refreshUrl, returnUrl) {
+    try {
+      const accountLink = await stripeConnect.accountLinks.create({
+        account: accountId,
+        refresh_url: refreshUrl,
+        return_url: returnUrl,
+        type: 'account_onboarding',
+      });
+
+      console.log(`[Stripe Connect] Created onboarding link for account ${accountId}`);
+      return accountLink;
+    } catch (error) {
+      console.error('[Stripe Connect] Error creating account link:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Get Stripe Connect account details
+   * @param {string} accountId - Stripe Connect account ID
+   * @returns {Promise<Object>} Account object
+   */
+  async getConnectAccount(accountId) {
+    try {
+      const account = await stripeConnect.accounts.retrieve(accountId);
+      return account;
+    } catch (error) {
+      console.error('[Stripe Connect] Error retrieving account:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Check if Connect account has completed onboarding
+   * @param {string} accountId - Stripe Connect account ID
+   * @returns {Promise<Object>} Onboarding status
+   */
+  async checkConnectAccountStatus(accountId) {
+    try {
+      const account = await stripeConnect.accounts.retrieve(accountId);
+
+      const status = {
+        accountId: account.id,
+        detailsSubmitted: account.details_submitted,
+        chargesEnabled: account.charges_enabled,
+        payoutsEnabled: account.payouts_enabled,
+        requirements: account.requirements,
+        isComplete: account.details_submitted && account.charges_enabled && account.payouts_enabled,
+        accountStatus: this._determineAccountStatus(account)
+      };
+
+      console.log(`[Stripe Connect] Account ${accountId} status:`, status.accountStatus);
+      return status;
+    } catch (error) {
+      console.error('[Stripe Connect] Error checking account status:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Determine account status from Stripe account object
+   * @param {Object} account - Stripe account object
+   * @returns {string} Account status
+   * @private
+   */
+  _determineAccountStatus(account) {
+    if (!account.details_submitted) {
+      return 'pending';
+    }
+    if (account.requirements?.disabled_reason) {
+      return 'disabled';
+    }
+    if (account.requirements?.currently_due?.length > 0) {
+      return 'pending';
+    }
+    if (account.charges_enabled && account.payouts_enabled) {
+      return 'enabled';
+    }
+    return 'pending';
+  }
+
+  /**
+   * Create a login link for the Connect Express dashboard
+   * @param {string} accountId - Stripe Connect account ID
+   * @returns {Promise<Object>} Login link object
+   */
+  async createConnectDashboardLink(accountId) {
+    try {
+      const loginLink = await stripeConnect.accounts.createLoginLink(accountId);
+      console.log(`[Stripe Connect] Created dashboard link for account ${accountId}`);
+      return loginLink;
+    } catch (error) {
+      console.error('[Stripe Connect] Error creating dashboard link:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Create a transfer to a Connect account (for distributions/payouts)
+   * @param {string} accountId - Destination Stripe Connect account ID
+   * @param {number} amount - Amount in cents
+   * @param {string} currency - Currency code (default: mxn)
+   * @param {string} description - Transfer description
+   * @param {Object} metadata - Additional metadata
+   * @returns {Promise<Object>} Transfer object
+   */
+  async createTransferToConnectAccount(accountId, amount, currency = 'mxn', description = '', metadata = {}) {
+    try {
+      const transfer = await stripeConnect.transfers.create({
+        amount: amount,
+        currency: currency,
+        destination: accountId,
+        description: description,
+        metadata: metadata
+      });
+
+      console.log(`[Stripe Connect] Created transfer ${transfer.id} to account ${accountId} for ${amount} ${currency}`);
+      return transfer;
+    } catch (error) {
+      console.error('[Stripe Connect] Error creating transfer:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Delete/deauthorize a Connect account
+   * @param {string} accountId - Stripe Connect account ID
+   * @returns {Promise<Object>} Deleted account object
+   */
+  async deleteConnectAccount(accountId) {
+    try {
+      const deleted = await stripeConnect.accounts.del(accountId);
+      console.log(`[Stripe Connect] Deleted account ${accountId}`);
+      return deleted;
+    } catch (error) {
+      console.error('[Stripe Connect] Error deleting account:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Get Connect account balance
+   * @param {string} accountId - Stripe Connect account ID
+   * @returns {Promise<Object>} Balance object
+   */
+  async getConnectAccountBalance(accountId) {
+    try {
+      const balance = await stripeConnect.balance.retrieve({
+        stripeAccount: accountId
+      });
+      return balance;
+    } catch (error) {
+      console.error('[Stripe Connect] Error retrieving balance:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Verify Connect webhook signature (uses separate secret)
+   * @param {string} payload - Raw request body
+   * @param {string} signature - Stripe signature header
+   * @returns {Object} Parsed Stripe event
+   */
+  verifyConnectWebhookSignature(payload, signature) {
+    try {
+      const webhookSecret = process.env.STRIPE_CONNECT_WEBHOOK_SECRET || process.env.STRIPE_WEBHOOK_SECRET;
+      const event = stripeConnect.webhooks.constructEvent(
+        payload,
+        signature,
+        webhookSecret
+      );
+      return event;
+    } catch (error) {
+      console.error('[Stripe Connect] Webhook signature verification failed:', error.message);
       throw error;
     }
   }

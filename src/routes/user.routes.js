@@ -1062,6 +1062,10 @@ router.get('/investors', authenticate, catchAsync(async (req, res) => {
       hasPendingPayments,
       paymentsCount: userPayments.length,
       pendingPaymentsCount: userPayments.filter(p => p.status === 'pending').length,
+      // Stripe Connect data
+      stripeAccountId: user.stripeAccountId || null,
+      stripeOnboardingComplete: user.stripeOnboardingComplete || false,
+      stripeAccountStatus: user.stripeAccountStatus || 'not_created',
     };
   });
 

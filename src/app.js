@@ -124,11 +124,17 @@ app.use('/uploads', (req, res, next) => {
 }, express.static(path.join(__dirname, '../uploads')));
 
 // ===== BODY PARSING MIDDLEWARE =====
-// Parse JSON bodies - EXCEPT for Stripe webhook route which needs raw body
+// Parse JSON bodies - EXCEPT for Stripe webhook routes which need raw body
 app.use((req, res, next) => {
-  if (req.originalUrl === '/api/stripe/webhook') {
-    // Skip JSON parsing for webhook route (needs raw body for signature verification)
-    next();
+  // Stripe webhooks need raw body for signature verification
+  const webhookRoutes = [
+    '/api/stripe/webhook',           // Stripe Subscriptions webhook
+    '/api/stripe/webhook-connect'    // Stripe Connect webhook
+  ];
+
+  if (webhookRoutes.some(route => req.originalUrl.startsWith(route))) {
+    // Use raw body for webhook routes
+    express.raw({ type: 'application/json' })(req, res, next);
   } else {
     express.json({
       limit: '10mb',
@@ -305,6 +311,7 @@ app.listen(PORT, async () => {
   console.log(`   • Notifications: http://localhost:${PORT}/api/notifications`);
   console.log(`   • Blockchain: http://localhost:${PORT}/api/blockchain`);
   console.log(`   • Stripe: http://localhost:${PORT}/api/stripe`);
+  console.log(`   • Stripe Connect Webhook: http://localhost:${PORT}/api/stripe/webhook-connect`);
   console.log('=================================\n');
   
   await connectDB();
@@ -320,6 +327,8 @@ app.listen(PORT, async () => {
     console.log(`   • JWT_SECRET: ${process.env.JWT_SECRET ? '✓ Set' : '✗ Not set'}`);
     console.log(`   • API_KEY: ${process.env.API_KEY ? '✓ Set' : '✗ Not set'}`);
     console.log(`   • STRIPE_SECRET_KEY: ${process.env.STRIPE_SECRET_KEY ? '✓ Set' : '✗ Not set'}`);
+    console.log(`   • STRIPE_CONNECT_SECRET_KEY: ${process.env.STRIPE_CONNECT_SECRET_KEY ? '✓ Set' : '(using STRIPE_SECRET_KEY)'}`);
+    console.log(`   • STRIPE_CONNECT_WEBHOOK_SECRET: ${process.env.STRIPE_CONNECT_WEBHOOK_SECRET ? '✓ Set' : '(using STRIPE_WEBHOOK_SECRET)'}`);
     console.log('=================================\n');
   }
 });

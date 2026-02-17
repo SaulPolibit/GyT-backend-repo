@@ -842,6 +842,10 @@ class User {
       stripeCustomerId: dbUser.stripe_customer_id,
       stripeSubscriptionId: dbUser.stripe_subscription_id,
       subscriptionStatus: dbUser.subscription_status,
+      // Stripe Connect fields (for investors)
+      stripeAccountId: dbUser.stripe_account_id,
+      stripeOnboardingComplete: dbUser.stripe_onboarding_complete,
+      stripeAccountStatus: dbUser.stripe_account_status,
       createdAt: dbUser.created_at,
       updatedAt: dbUser.updated_at,
 
@@ -933,6 +937,10 @@ class User {
       stripeCustomerId: 'stripe_customer_id',
       stripeSubscriptionId: 'stripe_subscription_id',
       subscriptionStatus: 'subscription_status',
+      // Stripe Connect fields (for investors)
+      stripeAccountId: 'stripe_account_id',
+      stripeOnboardingComplete: 'stripe_onboarding_complete',
+      stripeAccountStatus: 'stripe_account_status',
     };
 
     Object.entries(modelData).forEach(([key, value]) => {
