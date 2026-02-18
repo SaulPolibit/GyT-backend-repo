@@ -5,6 +5,7 @@
 const User = require('./user');
 const Company = require('./company');
 const NotificationSettings = require('./notificationSettings');
+const Notification = require('./notification');
 const Project = require('./project');
 const SmartContract = require('./smartContract');
 
@@ -54,6 +55,7 @@ module.exports = {
   User,
   Company,
   NotificationSettings,
+  Notification,
   Project,
   SmartContract,
 

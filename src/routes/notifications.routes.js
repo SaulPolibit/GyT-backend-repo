@@ -1,6 +1,6 @@
 /**
- * Notifications Settings API Routes
- * User notification preferences management endpoints
+ * Notifications API Routes
+ * User notification preferences and inbox management endpoints
  */
 
 const express = require('express');
@@ -9,7 +9,7 @@ const {
   catchAsync,
   validate
 } = require('../middleware/errorHandler');
-const { NotificationSettings } = require('../models/supabase');
+const { NotificationSettings, Notification } = require('../models/supabase');
 const { getUserContext, ROLES } = require('../middleware/rbac');
 
 const router = express.Router();
@@ -225,6 +225,351 @@ router.delete('/settings', authenticate, catchAsync(async (req, res) => {
   res.status(200).json({
     success: true,
     message: 'Notification settings deleted successfully'
+  });
+}));
+
+// ============================================================================
+// NOTIFICATION INBOX ROUTES
+// ============================================================================
+
+/**
+ * @route   GET /api/notifications
+ * @desc    Get user's notifications (inbox)
+ * @access  Private (requires Bearer token)
+ */
+router.get('/', authenticate, catchAsync(async (req, res) => {
+  const userId = req.auth.userId || req.user.id;
+
+  validate(userId, 'User ID is required');
+
+  // Parse query parameters
+  const options = {
+    status: req.query.status,
+    channel: req.query.channel,
+    notificationType: req.query.type,
+    unreadOnly: req.query.unread === 'true',
+    limit: parseInt(req.query.limit) || 50,
+    offset: parseInt(req.query.offset) || 0,
+    orderBy: req.query.orderBy || 'created_at',
+    ascending: req.query.order === 'asc'
+  };
+
+  const notifications = await Notification.findByUserId(userId, options);
+
+  res.status(200).json({
+    success: true,
+    message: 'Notifications retrieved successfully',
+    data: notifications,
+    pagination: {
+      limit: options.limit,
+      offset: options.offset,
+      count: notifications.length
+    }
+  });
+}));
+
+/**
+ * @route   GET /api/notifications/unread-count
+ * @desc    Get user's unread notification count
+ * @access  Private (requires Bearer token)
+ */
+router.get('/unread-count', authenticate, catchAsync(async (req, res) => {
+  const userId = req.auth.userId || req.user.id;
+
+  validate(userId, 'User ID is required');
+
+  const count = await Notification.getUnreadCount(userId);
+
+  res.status(200).json({
+    success: true,
+    data: { count }
+  });
+}));
+
+/**
+ * @route   GET /api/notifications/:id
+ * @desc    Get a specific notification by ID
+ * @access  Private (requires Bearer token)
+ */
+router.get('/:id', authenticate, catchAsync(async (req, res) => {
+  const userId = req.auth.userId || req.user.id;
+  const { id } = req.params;
+
+  validate(id, 'Notification ID is required');
+
+  const notification = await Notification.findById(id);
+
+  if (!notification) {
+    return res.status(404).json({
+      success: false,
+      message: 'Notification not found'
+    });
+  }
+
+  // Verify notification belongs to user
+  if (notification.userId !== userId) {
+    return res.status(403).json({
+      success: false,
+      message: 'Access denied'
+    });
+  }
+
+  res.status(200).json({
+    success: true,
+    data: notification
+  });
+}));
+
+/**
+ * @route   POST /api/notifications
+ * @desc    Create a new notification (Admin/System only)
+ * @access  Private (Root and Admin only)
+ */
+router.post('/', authenticate, catchAsync(async (req, res) => {
+  const { userRole } = getUserContext(req);
+
+  // Only ROOT and ADMIN can create notifications
+  if (userRole !== ROLES.ROOT && userRole !== ROLES.ADMIN) {
+    return res.status(403).json({
+      success: false,
+      message: 'Unauthorized: Only Root and Admin users can create notifications'
+    });
+  }
+
+  const senderId = req.auth.userId || req.user.id;
+
+  const {
+    userId,
+    notificationType,
+    channel,
+    title,
+    message,
+    priority,
+    relatedEntityType,
+    relatedEntityId,
+    metadata,
+    actionUrl,
+    emailSubject,
+    emailTemplate,
+    expiresAt
+  } = req.body;
+
+  validate(userId, 'User ID is required');
+  validate(notificationType, 'Notification type is required');
+  validate(title, 'Title is required');
+  validate(message, 'Message is required');
+
+  // Validate notification type
+  if (!Notification.TYPES.includes(notificationType)) {
+    return res.status(400).json({
+      success: false,
+      message: `Invalid notification type. Must be one of: ${Notification.TYPES.join(', ')}`
+    });
+  }
+
+  // Validate channel if provided
+  if (channel && !Notification.CHANNELS.includes(channel)) {
+    return res.status(400).json({
+      success: false,
+      message: `Invalid channel. Must be one of: ${Notification.CHANNELS.join(', ')}`
+    });
+  }
+
+  // Validate priority if provided
+  if (priority && !Notification.PRIORITIES.includes(priority)) {
+    return res.status(400).json({
+      success: false,
+      message: `Invalid priority. Must be one of: ${Notification.PRIORITIES.join(', ')}`
+    });
+  }
+
+  const notification = await Notification.create({
+    userId,
+    notificationType,
+    channel: channel || 'portal',
+    title,
+    message,
+    priority: priority || 'normal',
+    relatedEntityType,
+    relatedEntityId,
+    metadata,
+    actionUrl,
+    senderId,
+    emailSubject,
+    emailTemplate,
+    expiresAt
+  });
+
+  res.status(201).json({
+    success: true,
+    message: 'Notification created successfully',
+    data: notification
+  });
+}));
+
+/**
+ * @route   POST /api/notifications/bulk
+ * @desc    Create multiple notifications (Admin/System only)
+ * @access  Private (Root and Admin only)
+ */
+router.post('/bulk', authenticate, catchAsync(async (req, res) => {
+  const { userRole } = getUserContext(req);
+
+  // Only ROOT and ADMIN can create notifications
+  if (userRole !== ROLES.ROOT && userRole !== ROLES.ADMIN) {
+    return res.status(403).json({
+      success: false,
+      message: 'Unauthorized: Only Root and Admin users can create notifications'
+    });
+  }
+
+  const senderId = req.auth.userId || req.user.id;
+  const { notifications } = req.body;
+
+  validate(notifications, 'Notifications array is required');
+
+  if (!Array.isArray(notifications) || notifications.length === 0) {
+    return res.status(400).json({
+      success: false,
+      message: 'Notifications must be a non-empty array'
+    });
+  }
+
+  // Add sender to each notification
+  const notificationsWithSender = notifications.map(n => ({
+    ...n,
+    senderId,
+    channel: n.channel || 'portal',
+    priority: n.priority || 'normal'
+  }));
+
+  const createdNotifications = await Notification.createMany(notificationsWithSender);
+
+  res.status(201).json({
+    success: true,
+    message: `${createdNotifications.length} notifications created successfully`,
+    data: createdNotifications
+  });
+}));
+
+/**
+ * @route   PUT /api/notifications/:id/read
+ * @desc    Mark a notification as read
+ * @access  Private (requires Bearer token)
+ */
+router.put('/:id/read', authenticate, catchAsync(async (req, res) => {
+  const userId = req.auth.userId || req.user.id;
+  const { id } = req.params;
+
+  validate(id, 'Notification ID is required');
+
+  const notification = await Notification.markAsRead(id, userId);
+
+  res.status(200).json({
+    success: true,
+    message: 'Notification marked as read',
+    data: notification
+  });
+}));
+
+/**
+ * @route   PUT /api/notifications/read-all
+ * @desc    Mark all notifications as read
+ * @access  Private (requires Bearer token)
+ */
+router.put('/read-all', authenticate, catchAsync(async (req, res) => {
+  const userId = req.auth.userId || req.user.id;
+
+  validate(userId, 'User ID is required');
+
+  const count = await Notification.markAllAsRead(userId);
+
+  res.status(200).json({
+    success: true,
+    message: `${count} notifications marked as read`
+  });
+}));
+
+/**
+ * @route   DELETE /api/notifications/:id
+ * @desc    Delete a notification
+ * @access  Private (requires Bearer token)
+ */
+router.delete('/:id', authenticate, catchAsync(async (req, res) => {
+  const userId = req.auth.userId || req.user.id;
+  const { id } = req.params;
+
+  validate(id, 'Notification ID is required');
+
+  // First verify notification belongs to user
+  const notification = await Notification.findById(id);
+
+  if (!notification) {
+    return res.status(404).json({
+      success: false,
+      message: 'Notification not found'
+    });
+  }
+
+  if (notification.userId !== userId) {
+    return res.status(403).json({
+      success: false,
+      message: 'Access denied'
+    });
+  }
+
+  await Notification.findByIdAndDelete(id);
+
+  res.status(200).json({
+    success: true,
+    message: 'Notification deleted successfully'
+  });
+}));
+
+/**
+ * @route   DELETE /api/notifications/cleanup/old
+ * @desc    Delete old read notifications (Admin only)
+ * @access  Private (Root and Admin only)
+ */
+router.delete('/cleanup/old', authenticate, catchAsync(async (req, res) => {
+  const { userRole } = getUserContext(req);
+
+  if (userRole !== ROLES.ROOT && userRole !== ROLES.ADMIN) {
+    return res.status(403).json({
+      success: false,
+      message: 'Unauthorized: Only Root and Admin users can cleanup notifications'
+    });
+  }
+
+  const daysOld = parseInt(req.query.days) || 30;
+  const count = await Notification.deleteOldRead(daysOld);
+
+  res.status(200).json({
+    success: true,
+    message: `${count} old notifications deleted`
+  });
+}));
+
+/**
+ * @route   DELETE /api/notifications/cleanup/expired
+ * @desc    Delete expired notifications (Admin only)
+ * @access  Private (Root and Admin only)
+ */
+router.delete('/cleanup/expired', authenticate, catchAsync(async (req, res) => {
+  const { userRole } = getUserContext(req);
+
+  if (userRole !== ROLES.ROOT && userRole !== ROLES.ADMIN) {
+    return res.status(403).json({
+      success: false,
+      message: 'Unauthorized: Only Root and Admin users can cleanup notifications'
+    });
+  }
+
+  const count = await Notification.deleteExpired();
+
+  res.status(200).json({
+    success: true,
+    message: `${count} expired notifications deleted`
   });
 }));
 

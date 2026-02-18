@@ -5,7 +5,7 @@
 const express = require('express');
 const { authenticate } = require('../middleware/auth');
 const { catchAsync, validate } = require('../middleware/errorHandler');
-const { Structure, StructureAdmin, User } = require('../models/supabase');
+const { Structure, StructureAdmin, User, Notification } = require('../models/supabase');
 const SmartContract = require('../models/supabase/smartContract');
 const {
   requireInvestmentManagerAccess,
@@ -319,6 +319,39 @@ router.post('/', authenticate, requireInvestmentManagerAccess, handleStructureBa
 
   // Enrich with smart contract data
   const enrichedStructure = await enrichStructureWithSmartContract(structure);
+
+  // Create notifications for all investors (role 3)
+  try {
+    // Find all users with role 3 (investors)
+    const investors = await User.find({ role: 3 });
+
+    if (investors && investors.length > 0) {
+      // Create notifications for each investor
+      const notificationsData = investors.map(investor => ({
+        userId: investor.id,
+        notificationType: 'new_investment',
+        channel: 'portal',
+        title: 'New Investment Opportunity',
+        message: `A new investment structure "${structure.name}" has been created. Check out the marketplace for more details.`,
+        priority: 'normal',
+        relatedEntityType: 'structure',
+        relatedEntityId: structure.id,
+        actionUrl: `/lp-portal/marketplace`,
+        senderId: userId,
+        metadata: {
+          structureId: structure.id,
+          structureName: structure.name,
+          structureType: structure.type
+        }
+      }));
+
+      await Notification.createMany(notificationsData);
+      console.log(`[Structure] Created ${notificationsData.length} notifications for investors about new structure: ${structure.name}`);
+    }
+  } catch (notificationError) {
+    // Log error but don't fail the structure creation
+    console.error('[Structure] Error creating notifications for investors:', notificationError.message);
+  }
 
   res.status(201).json({
     success: true,
