@@ -50,6 +50,9 @@ const KycSession = require('./kycSession');
 // Firm Settings models
 const FirmSettings = require('./firmSettings');
 
+// Presence System models
+const Presence = require('./presence');
+
 module.exports = {
   // Core models
   User,
@@ -99,4 +102,7 @@ module.exports = {
 
   // Firm Settings models
   FirmSettings,
+
+  // Presence System models
+  Presence,
 };

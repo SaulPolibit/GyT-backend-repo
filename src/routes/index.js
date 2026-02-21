@@ -45,6 +45,9 @@ const kycSessionRoutes = require('./kycSession.routes');
 // Firm Settings routes
 const firmSettingsRoutes = require('./firmSettings.routes');
 
+// Presence System routes
+const presenceRoutes = require('./presence.routes');
+
 const router = express.Router();
 
 // Mount route modules
@@ -95,6 +98,9 @@ router.use('/kyc-sessions', kycSessionRoutes);
 // Mount Firm Settings routes
 router.use('/firm-settings', firmSettingsRoutes);
 
+// Mount Presence System routes
+router.use('/presence', presenceRoutes);
+
 // Root API endpoint
 router.get('/', (_req, res) => {
   res.json({
@@ -139,6 +145,8 @@ router.get('/', (_req, res) => {
       kycSessions: '/api/kyc-sessions',
       // Firm Settings endpoints
       firmSettings: '/api/firm-settings',
+      // Presence System endpoints
+      presence: '/api/presence',
     },
   });
 });

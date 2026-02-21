@@ -275,6 +275,7 @@ class NotificationSettings {
       quarterlyReports: dbSettings.quarterly_reports,
       securityAlerts: dbSettings.security_alerts,
       urgentCapitalCalls: dbSettings.urgent_capital_calls,
+      newStructureNotifications: dbSettings.new_structure_notifications,
       createdAt: dbSettings.created_at,
       updatedAt: dbSettings.updated_at,
 
@@ -302,7 +303,8 @@ class NotificationSettings {
           paymentConfirmations: true,
           quarterlyReports: true,
           securityAlerts: true,
-          urgentCapitalCalls: true
+          urgentCapitalCalls: true,
+          newStructureNotifications: true
         });
       },
 
@@ -325,7 +327,8 @@ class NotificationSettings {
           paymentConfirmations: false,
           quarterlyReports: false,
           securityAlerts: false,
-          urgentCapitalCalls: false
+          urgentCapitalCalls: false,
+          newStructureNotifications: false
         });
       }
     };
@@ -364,6 +367,7 @@ class NotificationSettings {
       quarterlyReports: 'quarterly_reports',
       securityAlerts: 'security_alerts',
       urgentCapitalCalls: 'urgent_capital_calls',
+      newStructureNotifications: 'new_structure_notifications',
     };
 
     Object.entries(modelData).forEach(([key, value]) => {

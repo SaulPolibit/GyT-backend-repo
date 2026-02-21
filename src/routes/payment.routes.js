@@ -9,9 +9,71 @@ const { catchAsync, validate } = require('../middleware/errorHandler');
 const { handleDocumentUpload } = require('../middleware/upload');
 const { uploadToSupabase } = require('../utils/fileUpload');
 const Payment = require('../models/supabase/payment');
-const { Structure, User } = require('../models/supabase');
+const { Structure, User, Notification, NotificationSettings } = require('../models/supabase');
 const SmartContract = require('../models/supabase/smartContract');
 const { requireInvestmentManagerAccess, getUserContext, ROLES } = require('../middleware/rbac');
+
+/**
+ * Helper function to create payment confirmation notification
+ * @param {Object} payment - Payment object
+ * @param {string} status - Payment status (approved/completed)
+ */
+async function createPaymentConfirmationNotification(payment, status) {
+  try {
+    if (!payment.userId) {
+      console.log('[Payment] No userId on payment, skipping notification');
+      return;
+    }
+
+    // Check if user has payment confirmations enabled
+    const settings = await NotificationSettings.findByUserId(payment.userId);
+    // Default to sending if no settings found or paymentConfirmations is enabled
+    const shouldNotify = !settings || settings.paymentConfirmations !== false;
+
+    if (!shouldNotify) {
+      console.log(`[Payment] User ${payment.userId} has payment confirmations disabled, skipping notification`);
+      return;
+    }
+
+    // Get structure name for notification
+    let structureName = 'your investment';
+    if (payment.structureId) {
+      try {
+        const structure = await Structure.findById(payment.structureId);
+        if (structure) {
+          structureName = structure.name || structure.title || 'your investment';
+        }
+      } catch (err) {
+        console.log('[Payment] Could not fetch structure name:', err.message);
+      }
+    }
+
+    const formattedAmount = payment.amount ? `$${parseFloat(payment.amount).toLocaleString()}` : 'your payment';
+
+    await Notification.create({
+      userId: payment.userId,
+      notificationType: 'payment_confirmation',
+      channel: 'portal',
+      title: 'Payment Confirmed',
+      message: `Your payment of ${formattedAmount} for ${structureName} has been ${status}.`,
+      priority: 'normal',
+      relatedEntityType: 'payment',
+      relatedEntityId: payment.id,
+      actionUrl: '/lp-portal/payments',
+      metadata: {
+        paymentId: payment.id,
+        amount: payment.amount,
+        structureId: payment.structureId,
+        status: status
+      }
+    });
+
+    console.log(`[Payment] Notification created for user ${payment.userId} - payment ${status}`);
+  } catch (error) {
+    // Log error but don't fail the payment operation
+    console.error('[Payment] Error creating notification:', error.message);
+  }
+}
 
 const router = express.Router();
 
@@ -166,6 +228,12 @@ router.post('/', authenticate, handleDocumentUpload, catchAsync(async (req, res)
   };
 
   const payment = await Payment.create(paymentData);
+
+  // If payment is created with approved/completed status (e.g., crypto payments), send notification
+  const confirmedStatuses = ['approved', 'completed'];
+  if (confirmedStatuses.includes(payment.status)) {
+    await createPaymentConfirmationNotification(payment, payment.status);
+  }
 
   res.status(201).json({
     success: true,
@@ -413,6 +481,9 @@ router.put('/:id', authenticate, handleDocumentUpload, catchAsync(async (req, re
   const payment = await Payment.findById(id);
   validate(payment, 'Payment not found');
 
+  // Store previous status to check if notification should be sent
+  const previousStatus = payment.status;
+
   const updateData = {};
   const allowedFields = [
     'email',
@@ -466,6 +537,15 @@ router.put('/:id', authenticate, handleDocumentUpload, catchAsync(async (req, re
 
   const updatedPayment = await Payment.findByIdAndUpdate(id, updateData);
 
+  // Send notification if payment status changed to approved/completed
+  const confirmedStatuses = ['approved', 'completed'];
+  const wasNotConfirmed = !confirmedStatuses.includes(previousStatus);
+  const isNowConfirmed = confirmedStatuses.includes(updatedPayment.status);
+
+  if (wasNotConfirmed && isNowConfirmed) {
+    await createPaymentConfirmationNotification(updatedPayment, updatedPayment.status);
+  }
+
   res.status(200).json({
     success: true,
     message: 'Payment updated successfully',
@@ -502,7 +582,17 @@ router.patch('/:id/status', authenticate, catchAsync(async (req, res) => {
   const payment = await Payment.findById(id);
   validate(payment, 'Payment not found');
 
+  // Check if status is changing to approved/completed (for notification)
+  const previousStatus = payment.status;
+  const confirmedStatuses = ['approved', 'completed'];
+  const wasNotConfirmed = !confirmedStatuses.includes(previousStatus);
+
   const updatedPayment = await Payment.updateStatus(id, status);
+
+  // Send notification if payment is now confirmed and wasn't before
+  if (wasNotConfirmed && confirmedStatuses.includes(status)) {
+    await createPaymentConfirmationNotification(updatedPayment, status);
+  }
 
   res.status(200).json({
     success: true,
@@ -632,6 +722,9 @@ router.patch('/:id/approve', authenticate, requireInvestmentManagerAccess, catch
   validate(payment.status === 'pending', 'Payment has already been processed');
 
   const approvedPayment = await Payment.approve(id, userId, adminNotes);
+
+  // Create notification for payment owner
+  await createPaymentConfirmationNotification(approvedPayment, 'approved');
 
   res.status(200).json({
     success: true,

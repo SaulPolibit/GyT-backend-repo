@@ -10,8 +10,48 @@ const {
   validate,
   NotFoundError
 } = require('../middleware/errorHandler');
-const { User, MFAFactor, SmartContract } = require('../models/supabase');
+const { User, MFAFactor, SmartContract, Notification, NotificationSettings } = require('../models/supabase');
 const { getSupabase } = require('../config/database');
+
+/**
+ * Helper function to create security alert notification
+ * @param {string} userId - User ID
+ * @param {string} alertType - Type of security alert (mfa_enabled, mfa_disabled, password_changed)
+ * @param {string} title - Notification title
+ * @param {string} message - Notification message
+ */
+async function createSecurityAlertNotification(userId, alertType, title, message) {
+  try {
+    // Check if user has security alerts enabled
+    const settings = await NotificationSettings.findByUserId(userId);
+
+    // Default to sending if no settings found or securityAlerts is enabled
+    const shouldSend = !settings || settings.securityAlerts !== false;
+
+    if (!shouldSend) {
+      console.log(`[Security Alert] User ${userId} has security alerts disabled, skipping notification`);
+      return;
+    }
+
+    await Notification.create({
+      userId,
+      notificationType: 'security_alert',
+      channel: 'portal',
+      title,
+      message,
+      priority: 'high',
+      metadata: {
+        alertType,
+        timestamp: new Date().toISOString()
+      }
+    });
+
+    console.log(`[Security Alert] Notification created for user ${userId}: ${alertType}`);
+  } catch (error) {
+    // Log error but don't fail the main operation
+    console.error('[Security Alert] Error creating notification:', error.message);
+  }
+}
 
 const router = express.Router();
 
@@ -784,6 +824,14 @@ router.post('/mfa/verify-enrollment', authenticate, catchAsync(async (req, res) 
 
     console.log(`[MFA] Enrollment verified and activated for user ${userId}`);
 
+    // Create security alert notification for MFA enabled
+    await createSecurityAlertNotification(
+      userId,
+      'mfa_enabled',
+      'Two-Factor Authentication Enabled',
+      'Two-factor authentication has been successfully enabled on your account. Your account is now more secure.'
+    );
+
     res.status(200).json({
       success: true,
       message: 'MFA has been successfully enabled on your account',
@@ -906,6 +954,14 @@ router.post('/mfa/unenroll', authenticate, catchAsync(async (req, res) => {
   await User.findByIdAndUpdate(userId, {
     mfaFactorId: null
   });
+
+  // Create security alert notification for MFA disabled
+  await createSecurityAlertNotification(
+    userId,
+    'mfa_disabled',
+    'Two-Factor Authentication Disabled',
+    'Two-factor authentication has been removed from your account. We recommend re-enabling it for better security.'
+  );
 
   res.status(200).json({
     success: true,
