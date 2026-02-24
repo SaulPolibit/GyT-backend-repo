@@ -36,6 +36,46 @@ const NOTIFICATION_PRIORITIES = ['low', 'normal', 'high', 'urgent'];
 
 class Notification {
   /**
+   * Broadcast a new notification to the user via Supabase Realtime
+   */
+  static async _broadcastNotification(notification) {
+    try {
+      const supabase = getSupabase();
+      const channelName = `notifications:user:${notification.userId}`;
+      const channel = supabase.channel(channelName);
+
+      // Subscribe to channel first, then send broadcast
+      await new Promise((resolve, reject) => {
+        channel.subscribe((status) => {
+          if (status === 'SUBSCRIBED') {
+            channel.send({
+              type: 'broadcast',
+              event: 'new_notification',
+              payload: {
+                id: notification.id,
+                user_id: notification.userId,
+                notification_type: notification.notificationType,
+                title: notification.title,
+                message: notification.message,
+                created_at: notification.createdAt,
+              }
+            }).then(() => {
+              console.log('[Realtime] Broadcasted notification to user:', notification.userId);
+              // Unsubscribe after sending
+              supabase.removeChannel(channel);
+              resolve();
+            }).catch(reject);
+          } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+            reject(new Error(`Channel subscription failed: ${status}`));
+          }
+        });
+      });
+    } catch (error) {
+      console.error('[Realtime] Error broadcasting notification:', error.message);
+    }
+  }
+
+  /**
    * Create a notification
    * @param {Object} notificationData - Notification data
    * @returns {Promise<Object>} Created notification
@@ -53,7 +93,12 @@ class Notification {
 
     if (error) throw error;
 
-    return this._toModel(data);
+    const notification = this._toModel(data);
+
+    // Broadcast to user
+    await this._broadcastNotification(notification);
+
+    return notification;
   }
 
   /**
@@ -72,6 +117,13 @@ class Notification {
       .select();
 
     if (error) throw error;
+
+    const notifications = data.map(item => this._toModel(item));
+
+    // Broadcast each notification to its user
+    for (const notification of notifications) {
+      await this._broadcastNotification(notification);
+    }
 
     return data.map(item => this._toModel(item));
   }

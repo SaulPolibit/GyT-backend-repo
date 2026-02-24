@@ -71,6 +71,38 @@ router.get('/', authenticate, catchAsync(async (req, res) => {
 }));
 
 /**
+ * @route   GET /api/conversations/unread/count
+ * @desc    Get total unread message count across all conversations
+ * @access  Private (requires authentication)
+ */
+router.get('/unread/count', authenticate, catchAsync(async (req, res) => {
+  const userId = req.auth.userId || req.user.id;
+
+  // Get all conversations where user is a participant
+  const conversations = await Conversation.findByUserId(userId);
+
+  // Sum up unread counts across all conversations
+  let totalUnreadCount = 0;
+  let conversationsWithUnread = 0;
+
+  await Promise.all(conversations.map(async (conversation) => {
+    const unreadCount = await ConversationParticipant.getUnreadCount(conversation.id, userId);
+    if (unreadCount > 0) {
+      totalUnreadCount += unreadCount;
+      conversationsWithUnread++;
+    }
+  }));
+
+  res.status(200).json({
+    success: true,
+    data: {
+      totalUnreadCount,
+      conversationsWithUnread
+    }
+  });
+}));
+
+/**
  * @route   GET /api/conversations/:id
  * @desc    Get single conversation by ID
  * @access  Private (requires authentication)

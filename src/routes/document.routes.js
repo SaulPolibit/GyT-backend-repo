@@ -9,6 +9,7 @@ const { handleDocumentUpload } = require('../middleware/upload');
 const { uploadToSupabase } = require('../utils/fileUpload');
 const { Document, Structure, User, Investor, Investment, CapitalCall, Distribution } = require('../models/supabase');
 const { getUserContext, ROLES } = require('../middleware/rbac');
+const { sendDocumentUploadNotice } = require('../utils/notificationHelper');
 
 const router = express.Router();
 
@@ -152,6 +153,45 @@ router.post('/', authenticate, handleDocumentUpload, catchAsync(async (req, res)
   };
 
   const document = await Document.create(documentData);
+
+  // Send notifications based on upload context
+  try {
+    // Get uploader name
+    const uploader = await User.findById(userId);
+    const uploaderName = uploader?.firstName
+      ? `${uploader.firstName} ${uploader.lastName || ''}`.trim()
+      : uploader?.email || 'A user';
+
+    if (userRole === ROLES.INVESTOR && entityType === 'Investor') {
+      // Investor uploaded their own document - notify structure admins
+      // Find the structure this investor belongs to and notify admins
+      const investor = await Investor.findById(entityId);
+      if (investor && investor.structureId) {
+        const structure = await Structure.findById(investor.structureId);
+        if (structure && structure.createdBy) {
+          // Notify the structure owner (admin)
+          sendDocumentUploadNotice(document, userId, uploaderName, [structure.createdBy])
+            .then(notifications => {
+              console.log(`[Document] Sent ${notifications.length} notifications for investor document upload`);
+            })
+            .catch(error => {
+              console.error('[Document] Error sending notifications:', error.message);
+            });
+        }
+      }
+    } else if (entityType === 'Structure') {
+      // Admin uploaded a structure document - notify all investors in the structure
+      sendDocumentUploadNotice(document, userId, uploaderName)
+        .then(notifications => {
+          console.log(`[Document] Sent ${notifications.length} notifications for structure document upload`);
+        })
+        .catch(error => {
+          console.error('[Document] Error sending notifications:', error.message);
+        });
+    }
+  } catch (notifyError) {
+    console.error('[Document] Error in notification logic:', notifyError.message);
+  }
 
   res.status(201).json({
     success: true,

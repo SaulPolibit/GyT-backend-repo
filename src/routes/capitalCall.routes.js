@@ -7,6 +7,7 @@ const { authenticate } = require('../middleware/auth');
 const { catchAsync, validate } = require('../middleware/errorHandler');
 const { CapitalCall, Structure } = require('../models/supabase');
 const { requireInvestmentManagerAccess, getUserContext, ROLES } = require('../middleware/rbac');
+const { sendCapitalCallNotice } = require('../utils/notificationHelper');
 
 const router = express.Router();
 
@@ -247,12 +248,13 @@ router.put('/:id', authenticate, requireInvestmentManagerAccess, catchAsync(asyn
 
 /**
  * @route   PATCH /api/capital-calls/:id/send
- * @desc    Mark capital call as sent
+ * @desc    Mark capital call as sent and notify investors
  * @access  Private (requires authentication, Root/Admin only)
  */
 router.patch('/:id/send', authenticate, requireInvestmentManagerAccess, catchAsync(async (req, res) => {
   const { userId, userRole } = getUserContext(req);
   const { id } = req.params;
+  const { urgent } = req.body; // Optional: mark as urgent capital call
 
   const capitalCall = await CapitalCall.findById(id);
   validate(capitalCall, 'Capital call not found');
@@ -264,6 +266,18 @@ router.patch('/:id/send', authenticate, requireInvestmentManagerAccess, catchAsy
   validate(capitalCall.status === 'Draft', 'Capital call must be in Draft status to send');
 
   const updatedCapitalCall = await CapitalCall.markAsSent(id);
+
+  // Get structure for notification
+  const structure = await Structure.findById(capitalCall.structureId);
+
+  // Send notifications to all investors in the structure
+  sendCapitalCallNotice(updatedCapitalCall, structure, userId, urgent === true)
+    .then(notifications => {
+      console.log(`[CapitalCall] Sent ${notifications.length} notifications for capital call:`, id);
+    })
+    .catch(error => {
+      console.error('[CapitalCall] Error sending notifications:', error.message);
+    });
 
   res.status(200).json({
     success: true,

@@ -3,6 +3,7 @@ const { createClient } = require('@supabase/supabase-js');
 require('dotenv').config();
 
 let supabase = null;
+let supabaseRealtime = null; // Separate client for Realtime (uses ANON_KEY)
 
 const connectDB = async () => {
   try {
@@ -19,7 +20,12 @@ const connectDB = async () => {
       auth: {
         autoRefreshToken: true,
         persistSession: false // Set to true if you need session persistence
-      }
+      },
+      realtime: {
+        params: {
+          eventsPerSecond: 10,
+        },
+      },
     });
 
     // Test connection by querying the users table
@@ -74,7 +80,12 @@ const getSupabase = () => {
       auth: {
         autoRefreshToken: true,
         persistSession: false
-      }
+      },
+      realtime: {
+        params: {
+          eventsPerSecond: 10,
+        },
+      },
     });
 
     console.log(`✅ Supabase client initialized: ${supabaseUrl}`);
@@ -82,4 +93,33 @@ const getSupabase = () => {
   return supabase;
 };
 
-module.exports = { connectDB, getSupabase };
+// Get a Supabase client specifically for Realtime (uses ANON_KEY for WebSocket compatibility)
+const getSupabaseRealtime = () => {
+  if (!supabaseRealtime) {
+    const supabaseUrl = process.env.SUPABASE_URL;
+    const anonKey = process.env.SUPABASE_ANON_KEY;
+
+    if (!supabaseUrl || !anonKey) {
+      throw new Error('Missing SUPABASE_URL or SUPABASE_ANON_KEY for Realtime');
+    }
+
+    console.log('[Supabase Realtime] Creating Realtime client with ANON_KEY');
+
+    supabaseRealtime = createClient(supabaseUrl, anonKey, {
+      auth: {
+        autoRefreshToken: false,
+        persistSession: false
+      },
+      realtime: {
+        params: {
+          eventsPerSecond: 10,
+        },
+      },
+    });
+
+    console.log(`[Supabase Realtime] Client initialized: ${supabaseUrl}`);
+  }
+  return supabaseRealtime;
+};
+
+module.exports = { connectDB, getSupabase, getSupabaseRealtime };

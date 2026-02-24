@@ -9,8 +9,13 @@ const {
   catchAsync,
   validate
 } = require('../middleware/errorHandler');
-const { NotificationSettings, Notification } = require('../models/supabase');
+const { NotificationSettings, Notification, Structure } = require('../models/supabase');
 const { getUserContext, ROLES } = require('../middleware/rbac');
+const {
+  sendQuarterlyReportNotice,
+  sendK1TaxFormNotice,
+  sendGeneralAnnouncement
+} = require('../utils/notificationHelper');
 
 const router = express.Router();
 
@@ -570,6 +575,155 @@ router.delete('/cleanup/expired', authenticate, catchAsync(async (req, res) => {
   res.status(200).json({
     success: true,
     message: `${count} expired notifications deleted`
+  });
+}));
+
+// ============================================================================
+// BULK NOTIFICATION ROUTES (Quarterly Reports, K-1 Forms, Announcements)
+// ============================================================================
+
+/**
+ * @route   POST /api/notifications/send/quarterly-report
+ * @desc    Send quarterly report notification to all investors in a structure
+ * @access  Private (Root and Admin only)
+ */
+router.post('/send/quarterly-report', authenticate, catchAsync(async (req, res) => {
+  const { userRole, userId } = getUserContext(req);
+
+  if (userRole !== ROLES.ROOT && userRole !== ROLES.ADMIN) {
+    return res.status(403).json({
+      success: false,
+      message: 'Unauthorized: Only Root and Admin users can send quarterly report notifications'
+    });
+  }
+
+  const { structureId, quarter, year, reportUrl } = req.body;
+
+  validate(structureId, 'Structure ID is required');
+  validate(quarter, 'Quarter is required (1-4)');
+  validate(year, 'Year is required');
+  validate(quarter >= 1 && quarter <= 4, 'Quarter must be between 1 and 4');
+
+  // Validate structure exists
+  const structure = await Structure.findById(structureId);
+  validate(structure, 'Structure not found');
+
+  // Root can access any structure, Admin can only access their own
+  if (userRole === ROLES.ADMIN) {
+    validate(structure.createdBy === userId, 'Unauthorized access to structure');
+  }
+
+  const reportData = { structureId, quarter, year, reportUrl };
+  const notifications = await sendQuarterlyReportNotice(reportData, structure, userId);
+
+  res.status(201).json({
+    success: true,
+    message: `Quarterly report notification sent to ${notifications.length} investors`,
+    data: {
+      notificationsSent: notifications.length,
+      quarter,
+      year,
+      structureName: structure.name
+    }
+  });
+}));
+
+/**
+ * @route   POST /api/notifications/send/k1-tax-form
+ * @desc    Send K-1 tax form available notification to all investors in a structure
+ * @access  Private (Root and Admin only)
+ */
+router.post('/send/k1-tax-form', authenticate, catchAsync(async (req, res) => {
+  const { userRole, userId } = getUserContext(req);
+
+  if (userRole !== ROLES.ROOT && userRole !== ROLES.ADMIN) {
+    return res.status(403).json({
+      success: false,
+      message: 'Unauthorized: Only Root and Admin users can send K-1 tax form notifications'
+    });
+  }
+
+  const { structureId, taxYear, formUrl } = req.body;
+
+  validate(structureId, 'Structure ID is required');
+  validate(taxYear, 'Tax year is required');
+
+  // Validate structure exists
+  const structure = await Structure.findById(structureId);
+  validate(structure, 'Structure not found');
+
+  // Root can access any structure, Admin can only access their own
+  if (userRole === ROLES.ADMIN) {
+    validate(structure.createdBy === userId, 'Unauthorized access to structure');
+  }
+
+  const k1Data = { structureId, taxYear, formUrl };
+  const notifications = await sendK1TaxFormNotice(k1Data, structure, userId);
+
+  res.status(201).json({
+    success: true,
+    message: `K-1 tax form notification sent to ${notifications.length} investors`,
+    data: {
+      notificationsSent: notifications.length,
+      taxYear,
+      structureName: structure.name
+    }
+  });
+}));
+
+/**
+ * @route   POST /api/notifications/send/announcement
+ * @desc    Send general announcement to investors (structure-wide or specific users)
+ * @access  Private (Root and Admin only)
+ */
+router.post('/send/announcement', authenticate, catchAsync(async (req, res) => {
+  const { userRole, userId } = getUserContext(req);
+
+  if (userRole !== ROLES.ROOT && userRole !== ROLES.ADMIN) {
+    return res.status(403).json({
+      success: false,
+      message: 'Unauthorized: Only Root and Admin users can send announcements'
+    });
+  }
+
+  const { title, message, structureId, priority, actionUrl, userIds } = req.body;
+
+  validate(title, 'Announcement title is required');
+  validate(message, 'Announcement message is required');
+  validate(structureId || (userIds && userIds.length > 0), 'Either structureId or userIds must be provided');
+
+  let structure = null;
+
+  // If structureId provided, validate it
+  if (structureId) {
+    structure = await Structure.findById(structureId);
+    validate(structure, 'Structure not found');
+
+    // Root can access any structure, Admin can only access their own
+    if (userRole === ROLES.ADMIN) {
+      validate(structure.createdBy === userId, 'Unauthorized access to structure');
+    }
+  }
+
+  const announcementData = {
+    title,
+    message,
+    structureId,
+    priority: priority || 'normal',
+    actionUrl,
+    announcementType: 'general'
+  };
+
+  const notifications = await sendGeneralAnnouncement(announcementData, userId, userIds);
+
+  res.status(201).json({
+    success: true,
+    message: `Announcement sent to ${notifications.length} users`,
+    data: {
+      notificationsSent: notifications.length,
+      title,
+      structureName: structure?.name || null
+    }
   });
 }));
 

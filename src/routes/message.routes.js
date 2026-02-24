@@ -14,9 +14,74 @@ const {
   Conversation,
   ConversationParticipant
 } = require('../models/supabase');
+const { getSupabase, getSupabaseRealtime } = require('../config/database');
 
 const router = express.Router();
+
 const { ROLES } = require('../models/supabase/user');
+
+/**
+ * Broadcast a new message to all connected clients via Supabase Realtime
+ */
+async function broadcastNewMessage(message) {
+  try {
+    // Use the Realtime-specific client (ANON_KEY) for WebSocket connections
+    const supabase = getSupabaseRealtime();
+
+    // Use the same channel name as the frontend
+    const channelName = 'messages:broadcast';
+    console.log('[Realtime] Creating channel:', channelName);
+
+    const channel = supabase.channel(channelName, {
+      config: {
+        broadcast: { ack: true }, // Wait for server acknowledgment
+      },
+    });
+
+    // Subscribe first, then send
+    channel.subscribe(async (status) => {
+      console.log('[Realtime] Backend channel status:', status);
+
+      if (status === 'SUBSCRIBED') {
+        const payload = {
+          id: message.id,
+          conversation_id: message.conversationId,
+          sender_id: message.senderId,
+          content: message.content,
+          type: message.type,
+          created_at: message.createdAt,
+        };
+
+        console.log('[Realtime] Sending broadcast with payload:', JSON.stringify(payload));
+
+        try {
+          const result = await channel.send({
+            type: 'broadcast',
+            event: 'new_message',
+            payload
+          });
+
+          console.log('[Realtime] Broadcast result:', result);
+          console.log('[Realtime] Broadcast sent successfully for message:', message.id);
+        } catch (sendError) {
+          console.error('[Realtime] Error sending broadcast:', sendError);
+        }
+
+        // Clean up after a short delay
+        setTimeout(() => {
+          console.log('[Realtime] Cleaning up channel');
+          supabase.removeChannel(channel);
+        }, 2000);
+      } else if (status === 'CHANNEL_ERROR') {
+        console.error('[Realtime] Channel error');
+      } else if (status === 'TIMED_OUT') {
+        console.error('[Realtime] Channel timed out');
+      }
+    });
+  } catch (error) {
+    console.error('[Realtime] Error in broadcastNewMessage:', error);
+  }
+}
 
 /**
  * @route   GET /api/conversations/:conversationId/messages
@@ -240,6 +305,9 @@ router.post('/:conversationId/messages', authenticate, handleChatAttachmentUploa
     updatedAt: new Date().toISOString()
   });
 
+  // Broadcast message to all connected clients
+  broadcastNewMessage(message);
+
   res.status(201).json({
     success: true,
     message: 'Message sent successfully',
@@ -356,6 +424,9 @@ router.post('/:conversationId/messages/file', authenticate, handleChatAttachment
 
   // Refetch message with attachments
   const enrichedMessage = await Message.findById(message.id);
+
+  // Broadcast message to all connected clients
+  broadcastNewMessage(enrichedMessage);
 
   res.status(201).json({
     success: true,
