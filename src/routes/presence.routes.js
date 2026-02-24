@@ -1,16 +1,13 @@
 const express = require('express');
 const router = express.Router();
 const { Presence, STATUSES } = require('../models/supabase/presence');
-const { authenticate } = require('../middleware/auth');
-
-// All routes require authentication
-router.use(authenticate);
+const { authenticate, verifyJWT } = require('../middleware/auth');
 
 /**
  * POST /api/presence/heartbeat
  * Update user's presence (heartbeat)
  */
-router.post('/heartbeat', async (req, res) => {
+router.post('/heartbeat', authenticate, async (req, res) => {
   try {
     const userId = req.auth.userId || req.user.id;
     const { status = STATUSES.ONLINE } = req.body;
@@ -34,10 +31,40 @@ router.post('/heartbeat', async (req, res) => {
 /**
  * POST /api/presence/offline
  * Mark user as offline (called on logout or window close)
+ * Supports both Authorization header and query token (for sendBeacon)
  */
 router.post('/offline', async (req, res) => {
   try {
-    const userId = req.auth.userId || req.user.id;
+    let userId = null;
+
+    // Try to get userId from authenticated request first
+    if (req.auth?.userId || req.user?.id) {
+      userId = req.auth?.userId || req.user?.id;
+    }
+    // Fallback: Check for token in query params (for sendBeacon which can't send headers)
+    else if (req.query.token) {
+      const decoded = verifyJWT(req.query.token);
+      if (decoded) {
+        userId = decoded.userId || decoded.id || decoded.sub;
+      }
+    }
+    // Fallback: Check Authorization header manually
+    else if (req.headers.authorization) {
+      const parts = req.headers.authorization.split(' ');
+      if (parts.length === 2 && parts[0] === 'Bearer') {
+        const decoded = verifyJWT(parts[1]);
+        if (decoded) {
+          userId = decoded.userId || decoded.id || decoded.sub;
+        }
+      }
+    }
+
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        message: 'Authentication required'
+      });
+    }
 
     await Presence.markOffline(userId);
 
@@ -59,7 +86,7 @@ router.post('/offline', async (req, res) => {
  * GET /api/presence/status/:userId
  * Get presence status for a specific user
  */
-router.get('/status/:userId', async (req, res) => {
+router.get('/status/:userId', authenticate, async (req, res) => {
   try {
     const { userId } = req.params;
 
@@ -88,7 +115,7 @@ router.get('/status/:userId', async (req, res) => {
  * POST /api/presence/status/bulk
  * Get presence status for multiple users
  */
-router.post('/status/bulk', async (req, res) => {
+router.post('/status/bulk', authenticate, async (req, res) => {
   try {
     const { userIds } = req.body;
 
@@ -133,7 +160,7 @@ router.post('/status/bulk', async (req, res) => {
  * GET /api/presence/online
  * Get all currently online users
  */
-router.get('/online', async (req, res) => {
+router.get('/online', authenticate, async (req, res) => {
   try {
     const onlineUsers = await Presence.getOnlineUsers();
 
