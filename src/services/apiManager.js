@@ -1132,7 +1132,7 @@ console.log('****** BODY:', body);
     const { callback, workflowId, vendorData } = variables;
 
     const body = JSON.stringify({
-      callback: callback || process.env.DIDIT_CALLBACK_URL || 'https://gy-t-front-repo.vercel.app',
+      callback: callback || process.env.DIDIT_CALLBACK_URL || 'https://gy-t-front-repo.vercel.app/kyc-callback',
       workflow_id: workflowId || process.env.DIDIT_WORKFLOW_ID,
       vendor_data: vendorData || process.env.DIDIT_VENDOR_DATA || 'CDMXHomes',
     });
