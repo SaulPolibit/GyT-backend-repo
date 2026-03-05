@@ -17,6 +17,7 @@ const {
 } = require('../middleware/rbac');
 const { handleStructureBannerUpload } = require('../middleware/upload');
 const { uploadToSupabase } = require('../utils/fileUpload');
+const { validateStructureCreation } = require('../services/subscriptionLimits.service');
 
 const router = express.Router();
 
@@ -314,6 +315,24 @@ router.post('/', authenticate, requireInvestmentManagerAccess, handleStructureBa
     contractTemplateUrlInternational: contractTemplateUrlInternational?.trim() || '',
     createdBy: userId
   };
+
+  // Validate subscription limits for structure creation (tier_based model only)
+  const subscriptionValidation = await validateStructureCreation(userId, structureData.totalCommitment);
+  if (!subscriptionValidation.allowed) {
+    return res.status(403).json({
+      success: false,
+      error: 'SUBSCRIPTION_LIMIT_EXCEEDED',
+      message: subscriptionValidation.reason,
+      details: {
+        currentTotal: subscriptionValidation.currentTotal,
+        newCommitment: subscriptionValidation.newCommitment,
+        projectedTotal: subscriptionValidation.projectedTotal,
+        limit: subscriptionValidation.limit,
+        tier: subscriptionValidation.tier,
+        upgradeOption: subscriptionValidation.upgradeOption
+      }
+    });
+  }
 
   const structure = await Structure.create(structureData);
 

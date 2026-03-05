@@ -7,6 +7,7 @@ const { authenticate, createToken } = require('../middleware/auth');
 const { catchAsync, validate } = require('../middleware/errorHandler');
 const { User, Notification, NotificationSettings } = require('../models/supabase');
 const { requireRootAccess, ROLES, getUserContext } = require('../middleware/rbac');
+const { validateInvestorCreation } = require('../services/subscriptionLimits.service');
 
 /**
  * Helper function to create security alert notification
@@ -109,6 +110,26 @@ router.post('/register', authenticate, catchAsync(async (req, res) => {
       success: false,
       message: 'User with this email already exists'
     });
+  }
+
+  // Validate subscription limits for investor creation (role 3)
+  if (role === ROLES.INVESTOR) {
+    const creatorUserId = req.auth.userId || req.user.id;
+    const subscriptionValidation = await validateInvestorCreation(creatorUserId);
+    if (!subscriptionValidation.allowed) {
+      return res.status(403).json({
+        success: false,
+        error: 'SUBSCRIPTION_LIMIT_EXCEEDED',
+        message: subscriptionValidation.reason,
+        details: {
+          currentCount: subscriptionValidation.currentCount,
+          limit: subscriptionValidation.limit,
+          tier: subscriptionValidation.tier,
+          model: subscriptionValidation.model,
+          upgradeOption: subscriptionValidation.upgradeOption
+        }
+      });
+    }
   }
 
   // Create user in Supabase Auth using admin client to bypass email confirmation

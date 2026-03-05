@@ -9,6 +9,9 @@ const { catchAsync } = require('../middleware/errorHandler');
 const stripeService = require('../services/stripe.service');
 const { User } = require('../models/supabase');
 
+// Initialize Stripe SDK for direct API calls
+const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
+
 // Price IDs - Get these from Stripe Dashboard after creating products
 // You can also use environment variables for flexibility
 const PRICE_IDS = {
@@ -632,6 +635,34 @@ router.post(
           const trialEndingSub = event.data.object;
           console.log(`[Stripe Webhook] Trial ending soon for subscription: ${trialEndingSub.id}`);
           // Send trial ending reminder
+          break;
+
+        case 'checkout.session.completed':
+          const session = event.data.object;
+          console.log(`[Stripe Webhook] Checkout session completed: ${session.id}`);
+
+          // Check for extra purchases via metadata
+          const { purchaseType, userId: purchaseUserId, extraInvestors, extraCommitment, millionsToAdd } = session.metadata || {};
+
+          if (purchaseType === 'extra_investors' && purchaseUserId && extraInvestors) {
+            console.log(`[Stripe Webhook] Processing extra investors purchase: ${extraInvestors} for user ${purchaseUserId}`);
+            try {
+              const updatedUser = await addExtraInvestors(purchaseUserId, parseInt(extraInvestors));
+              console.log(`[Stripe Webhook] Extra investors added. New limit: ${updatedUser.max_investors}`);
+            } catch (err) {
+              console.error(`[Stripe Webhook] Error adding extra investors:`, err);
+            }
+          }
+
+          if (purchaseType === 'extra_aum' && purchaseUserId && extraCommitment) {
+            console.log(`[Stripe Webhook] Processing extra AUM purchase: ${extraCommitment} for user ${purchaseUserId}`);
+            try {
+              const updatedUser = await addExtraCommitment(purchaseUserId, parseFloat(extraCommitment));
+              console.log(`[Stripe Webhook] Extra AUM added. New limit: ${updatedUser.max_total_commitment}`);
+            } catch (err) {
+              console.error(`[Stripe Webhook] Error adding extra AUM:`, err);
+            }
+          }
           break;
 
         default:
@@ -1276,5 +1307,359 @@ router.get('/webhook-connect/health', (req, res) => {
     timestamp: new Date().toISOString()
   });
 });
+
+// ==========================================
+// SUBSCRIPTION LIMITS ENDPOINTS
+// ==========================================
+
+const { getSubscriptionUsage, updateUserSubscription, validateStructureCreation, validateInvestorCreation, addExtraInvestors, addExtraCommitment } = require('../services/subscriptionLimits.service');
+
+/**
+ * @route   GET /api/stripe/subscription-usage
+ * @desc    Get current subscription usage stats (investor count, commitment)
+ * @access  Private
+ */
+router.get('/subscription-usage', authenticate, catchAsync(async (req, res) => {
+  const userId = req.user.id;
+
+  try {
+    const usage = await getSubscriptionUsage(userId);
+    res.json({
+      success: true,
+      usage
+    });
+  } catch (error) {
+    console.error('[Stripe] Error getting subscription usage:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to get subscription usage',
+      error: error.message
+    });
+  }
+}));
+
+/**
+ * @route   POST /api/stripe/update-subscription-plan
+ * @desc    Update user's subscription model and tier
+ * @access  Private
+ */
+router.post('/update-subscription-plan', authenticate, catchAsync(async (req, res) => {
+  const userId = req.user.id;
+  const { model, tier } = req.body;
+
+  // Validate model
+  if (!model || !['tier_based', 'payg'].includes(model)) {
+    return res.status(400).json({
+      success: false,
+      message: 'Invalid subscription model. Must be "tier_based" or "payg"'
+    });
+  }
+
+  // Validate tier based on model
+  const validTiers = model === 'payg'
+    ? ['starter', 'growth', 'enterprise']
+    : ['starter', 'professional', 'enterprise'];
+
+  if (!tier || !validTiers.includes(tier)) {
+    return res.status(400).json({
+      success: false,
+      message: `Invalid tier for ${model} model. Must be one of: ${validTiers.join(', ')}`
+    });
+  }
+
+  try {
+    await updateUserSubscription(userId, model, tier);
+
+    // Get updated usage stats
+    const usage = await getSubscriptionUsage(userId);
+
+    res.json({
+      success: true,
+      message: 'Subscription plan updated successfully',
+      usage
+    });
+  } catch (error) {
+    console.error('[Stripe] Error updating subscription plan:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to update subscription plan',
+      error: error.message
+    });
+  }
+}));
+
+/**
+ * @route   POST /api/stripe/purchase-extra-investors
+ * @desc    Create Stripe checkout session for purchasing extra investor slots
+ * @access  Private
+ */
+router.post('/purchase-extra-investors', authenticate, catchAsync(async (req, res) => {
+  const userId = req.user.id;
+  const userEmail = req.user.email;
+  const { extraInvestors } = req.body;
+
+  // Validate input
+  if (!extraInvestors || typeof extraInvestors !== 'number' || extraInvestors <= 0) {
+    return res.status(400).json({
+      success: false,
+      message: 'Invalid extraInvestors value. Must be a positive number.'
+    });
+  }
+
+  try {
+    const priceId = process.env.STRIPE_PRICE_EXTRA_INVESTORS;
+    if (!priceId) {
+      return res.status(500).json({
+        success: false,
+        message: 'Extra investors price not configured'
+      });
+    }
+
+    // Calculate quantity (price is per 10 investors, so +10 = 1 unit, +25 = 2.5 rounded up to 3, etc.)
+    const quantity = Math.ceil(extraInvestors / 10);
+
+    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+
+    // Create Stripe checkout session
+    const session = await stripe.checkout.sessions.create({
+      mode: 'payment',
+      customer_email: userEmail,
+      line_items: [
+        {
+          price: priceId,
+          quantity: quantity,
+        },
+      ],
+      metadata: {
+        userId,
+        purchaseType: 'extra_investors',
+        extraInvestors: extraInvestors.toString(),
+      },
+      success_url: `${frontendUrl}/investment-manager/settings?tab=subscription&success=true&purchase=extra_investors&quantity=${extraInvestors}&session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: `${frontendUrl}/investment-manager/settings?tab=subscription&canceled=true`,
+    });
+
+    console.log('[Stripe] Extra investors checkout session created:', { userId, extraInvestors, quantity, sessionId: session.id });
+
+    res.json({
+      success: true,
+      url: session.url,
+      sessionId: session.id
+    });
+  } catch (error) {
+    console.error('[Stripe] Error creating extra investors checkout:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to create checkout session',
+      error: error.message
+    });
+  }
+}));
+
+/**
+ * @route   POST /api/stripe/purchase-extra-aum
+ * @desc    Create Stripe checkout session for purchasing extra AUM capacity
+ * @access  Private
+ */
+router.post('/purchase-extra-aum', authenticate, catchAsync(async (req, res) => {
+  const userId = req.user.id;
+  const userEmail = req.user.email;
+  const { extraCommitment } = req.body;
+
+  // Validate input - should be in dollars (e.g., 1000000 for $1M)
+  if (!extraCommitment || typeof extraCommitment !== 'number' || extraCommitment <= 0) {
+    return res.status(400).json({
+      success: false,
+      message: 'Invalid extraCommitment value. Must be a positive number in dollars.'
+    });
+  }
+
+  try {
+    const priceId = process.env.STRIPE_PRICE_EXTRA_AUM;
+    if (!priceId) {
+      return res.status(500).json({
+        success: false,
+        message: 'Extra AUM price not configured'
+      });
+    }
+
+    // Calculate quantity (price is per $1M, so $1M = 1 unit, $5M = 5 units)
+    const millionsToAdd = extraCommitment / 1000000;
+    const quantity = Math.ceil(millionsToAdd);
+
+    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+
+    // Create Stripe checkout session
+    const session = await stripe.checkout.sessions.create({
+      mode: 'payment',
+      customer_email: userEmail,
+      line_items: [
+        {
+          price: priceId,
+          quantity: quantity,
+        },
+      ],
+      metadata: {
+        userId,
+        purchaseType: 'extra_aum',
+        extraCommitment: extraCommitment.toString(),
+        millionsToAdd: millionsToAdd.toString(),
+      },
+      success_url: `${frontendUrl}/investment-manager/settings?tab=subscription&success=true&purchase=extra_aum&quantity=${millionsToAdd}&session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: `${frontendUrl}/investment-manager/settings?tab=subscription&canceled=true`,
+    });
+
+    console.log('[Stripe] Extra AUM checkout session created:', { userId, extraCommitment, millionsToAdd, quantity, sessionId: session.id });
+
+    res.json({
+      success: true,
+      url: session.url,
+      sessionId: session.id
+    });
+  } catch (error) {
+    console.error('[Stripe] Error creating extra AUM checkout:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to create checkout session',
+      error: error.message
+    });
+  }
+}));
+
+/**
+ * @route   POST /api/stripe/verify-extra-purchase
+ * @desc    Verify a completed checkout session and apply extra purchase to user limits
+ * @access  Private
+ */
+router.post('/verify-extra-purchase', authenticate, catchAsync(async (req, res) => {
+  const userId = req.user.id;
+  const { sessionId } = req.body;
+
+  if (!sessionId) {
+    return res.status(400).json({
+      success: false,
+      message: 'Session ID is required'
+    });
+  }
+
+  try {
+    // Retrieve the checkout session from Stripe
+    const session = await stripe.checkout.sessions.retrieve(sessionId);
+
+    console.log('[Stripe] Verifying extra purchase session:', { sessionId, status: session.payment_status, metadata: session.metadata });
+
+    // Check if payment was successful
+    if (session.payment_status !== 'paid') {
+      return res.status(400).json({
+        success: false,
+        message: 'Payment not completed',
+        status: session.payment_status
+      });
+    }
+
+    // Verify the session belongs to this user
+    if (session.metadata?.userId !== userId) {
+      return res.status(403).json({
+        success: false,
+        message: 'Session does not belong to this user'
+      });
+    }
+
+    const { purchaseType, extraInvestors, extraCommitment } = session.metadata || {};
+
+    // Check if already processed (simple check - could use a processed_sessions table for production)
+    const existingUser = await User.findById(userId);
+
+    if (purchaseType === 'extra_investors' && extraInvestors) {
+      const investorsToAdd = parseInt(extraInvestors);
+      console.log(`[Stripe] Applying extra investors: ${investorsToAdd} for user ${userId}`);
+
+      const updatedUser = await addExtraInvestors(userId, investorsToAdd);
+
+      return res.json({
+        success: true,
+        message: `Added ${investorsToAdd} extra investor slots`,
+        newLimit: updatedUser.max_investors,
+        extraPurchased: updatedUser.extra_investors_purchased
+      });
+    }
+
+    if (purchaseType === 'extra_aum' && extraCommitment) {
+      const commitmentToAdd = parseFloat(extraCommitment);
+      console.log(`[Stripe] Applying extra AUM: ${commitmentToAdd} for user ${userId}`);
+
+      const updatedUser = await addExtraCommitment(userId, commitmentToAdd);
+
+      return res.json({
+        success: true,
+        message: `Added $${(commitmentToAdd / 1000000).toFixed(0)}M extra AUM capacity`,
+        newLimit: parseFloat(updatedUser.max_total_commitment),
+        extraPurchased: parseFloat(updatedUser.extra_commitment_purchased)
+      });
+    }
+
+    return res.status(400).json({
+      success: false,
+      message: 'Unknown purchase type or missing metadata'
+    });
+
+  } catch (error) {
+    console.error('[Stripe] Error verifying extra purchase:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to verify purchase',
+      error: error.message
+    });
+  }
+}));
+
+/**
+ * @route   POST /api/stripe/validate-structure-creation
+ * @desc    Validate if a new structure can be created (checks commitment limits)
+ * @access  Private
+ */
+router.post('/validate-structure-creation', authenticate, catchAsync(async (req, res) => {
+  const userId = req.user.id;
+  const { totalCommitment } = req.body;
+
+  try {
+    const validation = await validateStructureCreation(userId, totalCommitment || 0);
+    res.json({
+      success: true,
+      validation
+    });
+  } catch (error) {
+    console.error('[Stripe] Error validating structure creation:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to validate structure creation',
+      error: error.message
+    });
+  }
+}));
+
+/**
+ * @route   GET /api/stripe/validate-investor-creation
+ * @desc    Validate if a new investor can be created (checks investor limits)
+ * @access  Private
+ */
+router.get('/validate-investor-creation', authenticate, catchAsync(async (req, res) => {
+  const userId = req.user.id;
+
+  try {
+    const validation = await validateInvestorCreation(userId);
+    res.json({
+      success: true,
+      validation
+    });
+  } catch (error) {
+    console.error('[Stripe] Error validating investor creation:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to validate investor creation',
+      error: error.message
+    });
+  }
+}));
 
 module.exports = router;
