@@ -339,6 +339,39 @@ class User {
   }
 
   /**
+   * Find and update user by criteria
+   * @param {Object} criteria - Search criteria (e.g., { stripeCustomerId: 'cus_xxx' } or { email: 'user@example.com' })
+   * @param {Object} updateData - Data to update
+   * @returns {Promise<Object|null>} Updated user or null if not found
+   */
+  static async findOneAndUpdate(criteria, updateData) {
+    const supabase = getSupabase();
+
+    // Convert camelCase criteria and updateData to snake_case
+    const dbCriteria = this._toDbFields(criteria);
+    const dbData = this._toDbFields(updateData);
+
+    // Build query with criteria
+    let query = supabase.from('users').update(dbData);
+
+    // Apply all criteria as filters
+    Object.entries(dbCriteria).forEach(([key, value]) => {
+      query = query.eq(key, value);
+    });
+
+    const { data, error } = await query.select().maybeSingle();
+
+    if (error) {
+      console.error('[User.findOneAndUpdate] Error:', error);
+      throw error;
+    }
+
+    if (!data) return null;
+
+    return this._toModel(data);
+  }
+
+  /**
    * Delete user by ID
    * @param {string} id - User ID
    * @returns {Promise<Object>} Deleted user
@@ -943,6 +976,16 @@ class User {
       subscriptionModel: 'subscription_model',
       subscriptionTier: 'subscription_tier',
       subscriptionStartDate: 'subscription_start_date',
+      // Subscription limits
+      maxInvestors: 'max_investors',
+      maxTotalCommitment: 'max_total_commitment',
+      extraInvestorsPurchased: 'extra_investors_purchased',
+      extraCommitmentPurchased: 'extra_commitment_purchased',
+      // Emissions tracking
+      emissionsAvailable: 'emissions_available',
+      emissionsUsed: 'emissions_used',
+      // Credit balance (PAYG model)
+      creditBalance: 'credit_balance',
       // Stripe Connect fields (for investors)
       stripeAccountId: 'stripe_account_id',
       stripeOnboardingComplete: 'stripe_onboarding_complete',

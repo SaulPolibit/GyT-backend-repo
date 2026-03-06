@@ -688,12 +688,16 @@ router.post(
         case 'customer.subscription.created':
         case 'customer.subscription.updated':
           const subscription = event.data.object;
-          console.log(`[Stripe Webhook] Subscription ${event.type}: ${subscription.id}`);
+          console.log(`[Stripe Webhook] Subscription ${event.type}: ${subscription.id}`, {
+            customer: subscription.customer,
+            metadata: subscription.metadata
+          });
 
           // Build update object
           const updateData = {
             stripeSubscriptionId: subscription.id,
-            subscriptionStatus: subscription.status
+            subscriptionStatus: subscription.status,
+            stripeCustomerId: subscription.customer // Also save the customer ID
           };
 
           // Set subscription_start_date only on creation (12-month minimum commitment)
@@ -702,18 +706,81 @@ router.post(
             const startTimestamp = subscription.start_date || subscription.current_period_start;
             updateData.subscriptionStartDate = new Date(startTimestamp * 1000).toISOString();
             console.log(`[Stripe Webhook] Setting subscription start date: ${updateData.subscriptionStartDate}`);
+
+            // Get subscription model and tier from metadata
+            const subModel = subscription.metadata?.subscriptionModel || 'tier_based';
+            const subTier = subscription.metadata?.planTier || 'starter';
+
+            updateData.subscriptionModel = subModel;
+            updateData.subscriptionTier = subTier;
+            console.log(`[Stripe Webhook] Setting subscription model: ${subModel}, tier: ${subTier}`);
+
+            // Import limits service to get default limits for the tier
+            const { getDefaultLimits } = require('../services/subscriptionLimits.service');
+            const defaultLimits = getDefaultLimits(subModel, subTier);
+
+            // Set subscription limits based on tier
+            updateData.maxInvestors = defaultLimits.maxInvestors;
+            updateData.maxTotalCommitment = defaultLimits.maxTotalCommitment;
+            console.log(`[Stripe Webhook] Setting limits: maxInvestors=${defaultLimits.maxInvestors}, maxTotalCommitment=${defaultLimits.maxTotalCommitment}`);
+
+            // Reset extra purchases for new subscription
+            updateData.extraInvestorsPurchased = 0;
+            updateData.extraCommitmentPurchased = 0;
+
+            // Set emissions from metadata
+            const emissionsAvailable = parseInt(subscription.metadata?.emissionsAvailable || '5');
+            updateData.emissionsAvailable = emissionsAvailable;
+            updateData.emissionsUsed = 0;
+            console.log(`[Stripe Webhook] Setting emissions: available=${emissionsAvailable}, used=0`);
+
+            // For PAYG model, initialize credit balance if provided in metadata
+            if (subModel === 'payg') {
+              const initialCredits = parseInt(subscription.metadata?.initialCredits || '0');
+              if (initialCredits > 0) {
+                updateData.creditBalance = initialCredits;
+                console.log(`[Stripe Webhook] Setting initial credit balance: ${initialCredits}`);
+              }
+            }
           }
 
-          // Update user subscription status
-          const updatedUser = await User.findOneAndUpdate(
+          console.log(`[Stripe Webhook] Update data to save:`, JSON.stringify(updateData, null, 2));
+
+          // Try to find user by stripeCustomerId first
+          let updatedUser = await User.findOneAndUpdate(
             { stripeCustomerId: subscription.customer },
             updateData
           );
 
+          // If not found, try to find by userId from metadata
+          if (!updatedUser && subscription.metadata?.userId) {
+            console.log(`[Stripe Webhook] User not found by customerId, trying userId: ${subscription.metadata.userId}`);
+            updatedUser = await User.findByIdAndUpdate(
+              subscription.metadata.userId,
+              updateData
+            );
+          }
+
+          // If still not found, try to find by email from Stripe customer
+          if (!updatedUser) {
+            try {
+              const stripeCustomer = await stripe.customers.retrieve(subscription.customer);
+              if (stripeCustomer && !stripeCustomer.deleted && stripeCustomer.email) {
+                console.log(`[Stripe Webhook] Trying to find user by email: ${stripeCustomer.email}`);
+                updatedUser = await User.findOneAndUpdate(
+                  { email: stripeCustomer.email.toLowerCase() },
+                  updateData
+                );
+              }
+            } catch (customerErr) {
+              console.error(`[Stripe Webhook] Error fetching customer:`, customerErr);
+            }
+          }
+
           if (updatedUser) {
             console.log(`[Stripe Webhook] Updated user ${updatedUser.id} subscription status to ${subscription.status}`);
           } else {
-            console.warn(`[Stripe Webhook] No user found with customer ID: ${subscription.customer}`);
+            console.warn(`[Stripe Webhook] No user found with customer ID: ${subscription.customer} or metadata userId: ${subscription.metadata?.userId}`);
           }
           break;
 
