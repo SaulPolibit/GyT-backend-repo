@@ -351,9 +351,13 @@ router.get('/subscription', authenticate, catchAsync(async (req, res) => {
  * @desc    Cancel subscription (at period end or immediately)
  * @access  Private
  * @body    { immediately: false }
+ *
+ * Note: 12-month minimum commitment is enforced. Users cannot cancel
+ * before 12 months from subscription start date.
  */
 router.post('/cancel-subscription', authenticate, catchAsync(async (req, res) => {
   const { immediately = false } = req.body;
+  const supabase = require('../config/database').getSupabase();
   const user = await User.findById(req.user.id);
 
   if (!user) {
@@ -368,6 +372,37 @@ router.post('/cancel-subscription', authenticate, catchAsync(async (req, res) =>
       success: false,
       message: 'No active subscription found'
     });
+  }
+
+  // Check 12-month minimum commitment
+  const { data: userData } = await supabase
+    .from('users')
+    .select('subscription_start_date')
+    .eq('id', req.user.id)
+    .single();
+
+  if (userData?.subscription_start_date) {
+    const startDate = new Date(userData.subscription_start_date);
+    const now = new Date();
+    const monthsElapsed = (now.getFullYear() - startDate.getFullYear()) * 12 +
+                          (now.getMonth() - startDate.getMonth());
+
+    const MINIMUM_MONTHS = 12;
+
+    if (monthsElapsed < MINIMUM_MONTHS) {
+      const remainingMonths = MINIMUM_MONTHS - monthsElapsed;
+      const canCancelDate = new Date(startDate);
+      canCancelDate.setMonth(canCancelDate.getMonth() + MINIMUM_MONTHS);
+
+      return res.status(403).json({
+        success: false,
+        error: 'MINIMUM_COMMITMENT',
+        message: `Your subscription has a 12-month minimum commitment. You can cancel after ${canCancelDate.toLocaleDateString()}.`,
+        monthsElapsed,
+        remainingMonths,
+        canCancelDate: canCancelDate.toISOString()
+      });
+    }
   }
 
   const subscription = await stripeService.cancelSubscription(
@@ -661,6 +696,30 @@ router.post(
               console.log(`[Stripe Webhook] Extra AUM added. New limit: ${updatedUser.max_total_commitment}`);
             } catch (err) {
               console.error(`[Stripe Webhook] Error adding extra AUM:`, err);
+            }
+          }
+
+          // Handle credit top-up (PAYG model)
+          const creditsToAdd = session.metadata?.creditsToAdd;
+          if (purchaseType === 'credit_topup' && purchaseUserId && creditsToAdd) {
+            console.log(`[Stripe Webhook] Processing credit top-up: ${creditsToAdd} cents for user ${purchaseUserId}`);
+            try {
+              const updatedUser = await addCredits(purchaseUserId, parseInt(creditsToAdd));
+              console.log(`[Stripe Webhook] Credits added. New balance: ${updatedUser.credit_balance}`);
+            } catch (err) {
+              console.error(`[Stripe Webhook] Error adding credits:`, err);
+            }
+          }
+
+          // Handle initial subscription with credits (PAYG)
+          const initialCredits = session.metadata?.initialCredits;
+          if (purchaseType === 'subscription' && purchaseUserId && initialCredits) {
+            console.log(`[Stripe Webhook] Adding initial credits: ${initialCredits} cents for user ${purchaseUserId}`);
+            try {
+              const updatedUser = await addCredits(purchaseUserId, parseInt(initialCredits));
+              console.log(`[Stripe Webhook] Initial credits added. Balance: ${updatedUser.credit_balance}`);
+            } catch (err) {
+              console.error(`[Stripe Webhook] Error adding initial credits:`, err);
             }
           }
           break;
@@ -1312,7 +1371,7 @@ router.get('/webhook-connect/health', (req, res) => {
 // SUBSCRIPTION LIMITS ENDPOINTS
 // ==========================================
 
-const { getSubscriptionUsage, updateUserSubscription, validateStructureCreation, validateInvestorCreation, addExtraInvestors, addExtraCommitment } = require('../services/subscriptionLimits.service');
+const { getSubscriptionUsage, updateUserSubscription, validateStructureCreation, validateInvestorCreation, addExtraInvestors, addExtraCommitment, addCredits } = require('../services/subscriptionLimits.service');
 
 /**
  * @route   GET /api/stripe/subscription-usage
@@ -1534,6 +1593,7 @@ router.post('/purchase-extra-aum', authenticate, catchAsync(async (req, res) => 
 router.post('/verify-extra-purchase', authenticate, catchAsync(async (req, res) => {
   const userId = req.user.id;
   const { sessionId } = req.body;
+  const supabase = require('../config/database').getSupabase();
 
   if (!sessionId) {
     return res.status(400).json({
@@ -1543,6 +1603,40 @@ router.post('/verify-extra-purchase', authenticate, catchAsync(async (req, res) 
   }
 
   try {
+    // Check if session was already processed in database (prevent duplicates)
+    const { data: existingSession } = await supabase
+      .from('processed_stripe_sessions')
+      .select('id')
+      .eq('session_id', sessionId)
+      .maybeSingle();
+
+    if (existingSession) {
+      console.log('[Stripe] Session already processed, skipping:', sessionId);
+      return res.json({
+        success: true,
+        message: 'Purchase already applied',
+        alreadyProcessed: true
+      });
+    }
+
+    // Mark session as processed FIRST (prevents race conditions)
+    const { error: insertError } = await supabase
+      .from('processed_stripe_sessions')
+      .insert({ session_id: sessionId, user_id: userId });
+
+    if (insertError) {
+      // If insert fails due to unique constraint, session was already processed
+      if (insertError.code === '23505') {
+        console.log('[Stripe] Session already processed (concurrent), skipping:', sessionId);
+        return res.json({
+          success: true,
+          message: 'Purchase already applied',
+          alreadyProcessed: true
+        });
+      }
+      console.error('[Stripe] Error marking session as processed:', insertError);
+    }
+
     // Retrieve the checkout session from Stripe
     const session = await stripe.checkout.sessions.retrieve(sessionId);
 
@@ -1566,9 +1660,6 @@ router.post('/verify-extra-purchase', authenticate, catchAsync(async (req, res) 
     }
 
     const { purchaseType, extraInvestors, extraCommitment } = session.metadata || {};
-
-    // Check if already processed (simple check - could use a processed_sessions table for production)
-    const existingUser = await User.findById(userId);
 
     if (purchaseType === 'extra_investors' && extraInvestors) {
       const investorsToAdd = parseInt(extraInvestors);
@@ -1598,6 +1689,21 @@ router.post('/verify-extra-purchase', authenticate, catchAsync(async (req, res) 
       });
     }
 
+    // Handle credit top-up
+    const creditsToAdd = session.metadata?.creditsToAdd;
+    if (purchaseType === 'credit_topup' && creditsToAdd) {
+      const credits = parseInt(creditsToAdd);
+      console.log(`[Stripe] Applying credit top-up: ${credits} cents for user ${userId}`);
+
+      const updatedUser = await addCredits(userId, credits);
+
+      return res.json({
+        success: true,
+        message: `Added $${(credits / 100).toFixed(2)} to your credit balance`,
+        newBalance: updatedUser.credit_balance
+      });
+    }
+
     return res.status(400).json({
       success: false,
       message: 'Unknown purchase type or missing metadata'
@@ -1608,6 +1714,70 @@ router.post('/verify-extra-purchase', authenticate, catchAsync(async (req, res) 
     res.status(500).json({
       success: false,
       message: 'Failed to verify purchase',
+      error: error.message
+    });
+  }
+}));
+
+/**
+ * @route   POST /api/stripe/purchase-credits
+ * @desc    Create Stripe checkout session for purchasing credits (PAYG model)
+ * @access  Private
+ */
+router.post('/purchase-credits', authenticate, catchAsync(async (req, res) => {
+  const userId = req.user.id;
+  const userEmail = req.user.email;
+  const { amountInCents } = req.body;
+
+  // Validate input (minimum $10 = 1000 cents)
+  if (!amountInCents || typeof amountInCents !== 'number' || amountInCents < 1000) {
+    return res.status(400).json({
+      success: false,
+      message: 'Invalid amount. Minimum top-up is $10.00'
+    });
+  }
+
+  try {
+    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+
+    // Create Stripe checkout session with dynamic pricing
+    const session = await stripe.checkout.sessions.create({
+      mode: 'payment',
+      customer_email: userEmail,
+      line_items: [
+        {
+          price_data: {
+            currency: 'usd',
+            product_data: {
+              name: 'Credit Top-Up',
+              description: `Add $${(amountInCents / 100).toFixed(2)} to your credit balance`,
+            },
+            unit_amount: amountInCents,
+          },
+          quantity: 1,
+        },
+      ],
+      metadata: {
+        userId,
+        purchaseType: 'credit_topup',
+        creditsToAdd: amountInCents.toString(),
+      },
+      success_url: `${frontendUrl}/investment-manager/settings?tab=subscription&success=true&purchase=credits&amount=${amountInCents}&session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: `${frontendUrl}/investment-manager/settings?tab=subscription&canceled=true`,
+    });
+
+    console.log('[Stripe] Credit top-up checkout session created:', { userId, amountInCents, sessionId: session.id });
+
+    res.json({
+      success: true,
+      url: session.url,
+      sessionId: session.id
+    });
+  } catch (error) {
+    console.error('[Stripe] Error creating credit top-up checkout:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to create checkout session',
       error: error.message
     });
   }

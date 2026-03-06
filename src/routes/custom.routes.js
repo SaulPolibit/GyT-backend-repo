@@ -1223,6 +1223,40 @@ router.post('/mfa/verify', authenticate, catchAsync(async (req, res) => {
 
 // ===== DIDIT KYC API =====
 
+const { checkCreditsForOperation, deductCreditsForOperation, getUserSubscription } = require('../services/subscriptionLimits.service');
+
+/**
+ * Find the subscription owner (admin) for credit deduction
+ * @param {string} userId - The user requesting KYC (could be investor)
+ * @returns {Promise<Object|null>} Admin user or null
+ */
+const findSubscriptionOwner = async (userId) => {
+  const supabase = require('../config/database').getSupabase();
+
+  // First check if the requesting user is an admin
+  const { data: requestingUser } = await supabase
+    .from('users')
+    .select('id, role, subscription_model')
+    .eq('id', userId)
+    .single();
+
+  // If requesting user is admin (role 0, 1, or 2), they are the subscription owner
+  if (requestingUser && [0, 1, 2].includes(requestingUser.role)) {
+    return requestingUser;
+  }
+
+  // Otherwise, find the admin with a subscription
+  const { data: admin } = await supabase
+    .from('users')
+    .select('id, role, subscription_model, subscription_tier')
+    .in('role', [0, 1])
+    .not('subscription_model', 'is', null)
+    .limit(1)
+    .single();
+
+  return admin;
+};
+
 /**
  * @route   POST /api/custom/didit/session
  * @desc    Create a new DiDit KYC verification session or retrieve existing one
@@ -1281,6 +1315,27 @@ router.post('/didit/session', authenticate, catchAsync(async (req, res) => {
   // No existing session OR expired session - create a new one
   const hadPreviousSession = !!user.kycId;
 
+  // Check credits for PAYG subscription before creating new session
+  const subscriptionOwner = await findSubscriptionOwner(userId);
+  if (subscriptionOwner) {
+    const creditCheck = await checkCreditsForOperation(subscriptionOwner.id, 'kyc_session');
+
+    if (!creditCheck.allowed) {
+      console.log('[DiDit] Insufficient credits for KYC session:', creditCheck);
+      return res.status(402).json({
+        success: false,
+        error: 'INSUFFICIENT_CREDITS',
+        message: creditCheck.reason,
+        creditInfo: {
+          required: creditCheck.cost,
+          available: creditCheck.balance,
+          model: creditCheck.model,
+          tier: creditCheck.tier
+        }
+      });
+    }
+  }
+
   const result = await apiManager.createDiditSession(context, {
     ...req.body
   });
@@ -1291,6 +1346,14 @@ router.post('/didit/session', authenticate, catchAsync(async (req, res) => {
       message: 'Failed to create DiDit session',
       details: result.body,
     });
+  }
+
+  // Deduct credits for PAYG subscription after successful session creation
+  if (subscriptionOwner) {
+    const deductResult = await deductCreditsForOperation(subscriptionOwner.id, 'kyc_session');
+    if (deductResult.success && deductResult.cost > 0) {
+      console.log(`[DiDit] Deducted ${deductResult.cost} cents for KYC session. New balance: ${deductResult.newBalance}`);
+    }
   }
 
   // Save session data to user profile (including new kycUrl for renewed sessions)

@@ -38,6 +38,23 @@ const PAYG_LIMITS = {
 };
 
 /**
+ * PAYG Credit Costs (in cents)
+ * Operations consume credits based on subscription tier
+ */
+const PAYG_CREDIT_COSTS = {
+  kyc_session: {
+    starter: 400,    // $4.00
+    growth: 300,     // $3.00
+    enterprise: 300  // $3.00
+  },
+  document_signing: {
+    starter: 300,    // $3.00
+    growth: 200,     // $2.00
+    enterprise: 200  // $2.00
+  }
+};
+
+/**
  * Tier-Based Model Default Limits
  */
 const TIER_BASED_LIMITS = {
@@ -201,7 +218,8 @@ const getUserSubscription = async (userId) => {
       max_total_commitment,
       max_investors,
       extra_commitment_purchased,
-      extra_investors_purchased
+      extra_investors_purchased,
+      credit_balance
     `)
     .eq('id', userId)
     .single();
@@ -229,6 +247,8 @@ const getUserSubscription = async (userId) => {
     // Track extras purchased
     extraCommitmentPurchased: parseFloat(user.extra_commitment_purchased) || 0,
     extraInvestorsPurchased: user.extra_investors_purchased || 0,
+    // Credit balance for PAYG (in cents)
+    creditBalance: user.credit_balance || 0,
     // Tier name for display
     tierName: getTierName(model, tier)
   };
@@ -405,6 +425,8 @@ const getSubscriptionUsage = async (userId) => {
         remaining: Math.max(0, subscription.maxTotalCommitment - currentCommitment),
         percentUsed: Math.round((currentCommitment / subscription.maxTotalCommitment) * 100)
       } : null,
+      // Credit balance for PAYG model (in cents)
+      creditBalance: subscription.creditBalance,
       extras: {
         commitmentPurchased: subscription.extraCommitmentPurchased,
         investorsPurchased: subscription.extraInvestorsPurchased
@@ -544,6 +566,196 @@ const addExtraCommitment = async (userId, extraCommitment) => {
   return data;
 };
 
+/**
+ * Get credit cost for an operation based on subscription tier
+ * @param {string} operation - Operation type ('kyc_session' or 'document_signing')
+ * @param {string} tier - Subscription tier
+ * @returns {number} Cost in cents
+ */
+const getCreditCost = (operation, tier) => {
+  const costs = PAYG_CREDIT_COSTS[operation];
+  if (!costs) {
+    console.warn(`[SubscriptionLimits] Unknown operation: ${operation}`);
+    return 0;
+  }
+  return costs[tier] || costs.starter;
+};
+
+/**
+ * Check if user has sufficient credits for an operation (PAYG model only)
+ * @param {string} userId - User ID
+ * @param {string} operation - Operation type ('kyc_session' or 'document_signing')
+ * @returns {Promise<Object>} { allowed: boolean, cost: number, balance: number, reason?: string }
+ */
+const checkCreditsForOperation = async (userId, operation) => {
+  try {
+    const subscription = await getUserSubscription(userId);
+
+    // Only PAYG model uses credits
+    if (subscription.model !== 'payg') {
+      return { allowed: true, cost: 0, balance: 0, model: subscription.model };
+    }
+
+    const cost = getCreditCost(operation, subscription.tier);
+    const balance = subscription.creditBalance || 0;
+
+    if (balance < cost) {
+      return {
+        allowed: false,
+        cost,
+        balance,
+        model: subscription.model,
+        tier: subscription.tier,
+        reason: `Insufficient credits. This operation costs $${(cost / 100).toFixed(2)} but your balance is $${(balance / 100).toFixed(2)}. Please add more credits to continue.`
+      };
+    }
+
+    return {
+      allowed: true,
+      cost,
+      balance,
+      model: subscription.model,
+      tier: subscription.tier
+    };
+  } catch (error) {
+    console.error('[SubscriptionLimits] checkCreditsForOperation error:', error);
+    throw error;
+  }
+};
+
+/**
+ * Deduct credits for an operation (PAYG model only)
+ * Validates sufficient balance before deducting
+ * @param {string} userId - User ID
+ * @param {string} operation - Operation type ('kyc_session' or 'document_signing')
+ * @returns {Promise<Object>} { success: boolean, cost: number, newBalance: number, reason?: string }
+ */
+const deductCreditsForOperation = async (userId, operation) => {
+  try {
+    const check = await checkCreditsForOperation(userId, operation);
+
+    if (!check.allowed) {
+      return {
+        success: false,
+        cost: check.cost,
+        balance: check.balance,
+        reason: check.reason
+      };
+    }
+
+    // Skip deduction for non-PAYG models
+    if (check.model !== 'payg') {
+      return {
+        success: true,
+        cost: 0,
+        newBalance: 0,
+        model: check.model
+      };
+    }
+
+    // Deduct the credits
+    const updatedUser = await deductCredits(userId, check.cost);
+
+    console.log(`[SubscriptionLimits] Deducted ${check.cost} cents for ${operation}. New balance: ${updatedUser.credit_balance}`);
+
+    return {
+      success: true,
+      cost: check.cost,
+      newBalance: updatedUser.credit_balance,
+      model: check.model,
+      tier: check.tier
+    };
+  } catch (error) {
+    console.error('[SubscriptionLimits] deductCreditsForOperation error:', error);
+    throw error;
+  }
+};
+
+/**
+ * Add credits to user's balance (for PAYG model)
+ * @param {string} userId - User ID
+ * @param {number} amountInCents - Amount to add in cents
+ * @returns {Promise<Object>} Updated user
+ */
+const addCredits = async (userId, amountInCents) => {
+  const supabase = getSupabase();
+
+  // First get current balance
+  const { data: user, error: fetchError } = await supabase
+    .from('users')
+    .select('credit_balance')
+    .eq('id', userId)
+    .single();
+
+  if (fetchError) {
+    throw fetchError;
+  }
+
+  const currentBalance = user.credit_balance || 0;
+  const newBalance = currentBalance + amountInCents;
+
+  const { data, error } = await supabase
+    .from('users')
+    .update({ credit_balance: newBalance })
+    .eq('id', userId)
+    .select()
+    .single();
+
+  if (error) {
+    console.error('[SubscriptionLimits] Error adding credits:', error);
+    throw error;
+  }
+
+  console.log('[SubscriptionLimits] Added credits:', { userId, amountInCents, newBalance: data.credit_balance });
+
+  return data;
+};
+
+/**
+ * Deduct credits from user's balance (for PAYG model)
+ * @param {string} userId - User ID
+ * @param {number} amountInCents - Amount to deduct in cents
+ * @returns {Promise<Object>} Updated user with new balance
+ */
+const deductCredits = async (userId, amountInCents) => {
+  const supabase = getSupabase();
+
+  // First get current balance
+  const { data: user, error: fetchError } = await supabase
+    .from('users')
+    .select('credit_balance')
+    .eq('id', userId)
+    .single();
+
+  if (fetchError) {
+    throw fetchError;
+  }
+
+  const currentBalance = user.credit_balance || 0;
+
+  if (currentBalance < amountInCents) {
+    throw new Error(`Insufficient credits. Current: ${currentBalance}, Required: ${amountInCents}`);
+  }
+
+  const newBalance = currentBalance - amountInCents;
+
+  const { data, error } = await supabase
+    .from('users')
+    .update({ credit_balance: newBalance })
+    .eq('id', userId)
+    .select()
+    .single();
+
+  if (error) {
+    console.error('[SubscriptionLimits] Error deducting credits:', error);
+    throw error;
+  }
+
+  console.log('[SubscriptionLimits] Deducted credits:', { userId, amountInCents, newBalance: data.credit_balance });
+
+  return data;
+};
+
 // ============================================================================
 // EXPORTS
 // ============================================================================
@@ -552,11 +764,13 @@ module.exports = {
   // Default Constants (for reference/fallback)
   PAYG_LIMITS,
   TIER_BASED_LIMITS,
+  PAYG_CREDIT_COSTS,
 
   // Helper functions
   getDefaultLimits,
   getUpgradeTier,
   formatCurrency,
+  getCreditCost,
 
   // Database queries
   countInvestors,
@@ -566,10 +780,16 @@ module.exports = {
   // Validation functions
   validateStructureCreation,
   validateInvestorCreation,
+  checkCreditsForOperation,
 
   // Usage and updates
   getSubscriptionUsage,
   updateUserSubscription,
   addExtraInvestors,
-  addExtraCommitment
+  addExtraCommitment,
+
+  // Credit management (PAYG)
+  addCredits,
+  deductCredits,
+  deductCreditsForOperation
 };

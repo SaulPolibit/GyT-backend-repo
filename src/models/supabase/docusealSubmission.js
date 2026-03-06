@@ -19,6 +19,7 @@ class DocusealSubmission {
       auditLogUrl: 'audit_log_url',
       status: 'status',
       userId: 'user_id',
+      creditsCharged: 'credits_charged',
       createdAt: 'created_at',
       updatedAt: 'updated_at'
     };
@@ -46,6 +47,7 @@ class DocusealSubmission {
       auditLogUrl: dbData.audit_log_url,
       status: dbData.status,
       userId: dbData.user_id,
+      credits_charged: dbData.credits_charged,
       createdAt: dbData.created_at,
       updatedAt: dbData.updated_at
     };

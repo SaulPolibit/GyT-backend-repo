@@ -13,8 +13,169 @@ const {
   AuthorizationError
 } = require('../middleware/errorHandler');
 const { User, DocusealSubmission, Payment } = require('../models/supabase');
+const { checkCreditsForOperation, deductCreditsForOperation } = require('../services/subscriptionLimits.service');
 
 const router = express.Router();
+
+/**
+ * Find the subscription owner (admin) for credit operations
+ */
+const findSubscriptionOwnerForDocuSeal = async () => {
+  const supabase = require('../config/database').getSupabase();
+
+  // Find the admin with a subscription (use maybeSingle to handle 0 results gracefully)
+  const { data: admin, error } = await supabase
+    .from('users')
+    .select('id, role, subscription_model, subscription_tier')
+    .in('role', [0, 1, 2])
+    .not('subscription_model', 'is', null)
+    .limit(1)
+    .maybeSingle();
+
+  if (error) {
+    console.error('[findSubscriptionOwnerForDocuSeal] Error finding admin:', error);
+    return null;
+  }
+
+  console.log('[findSubscriptionOwnerForDocuSeal] Found admin:', admin);
+  return admin;
+};
+
+/**
+ * @route   GET /api/docuseal/check-signing-credits
+ * @desc    Check if there are enough credits for document signing (PAYG model)
+ * @access  Private (requires authentication)
+ * @returns {object} { allowed: boolean, cost: number, balance: number, ... }
+ */
+router.get('/check-signing-credits', authenticate, catchAsync(async (req, res) => {
+  try {
+    // Find the subscription owner (admin)
+    const subscriptionOwner = await findSubscriptionOwnerForDocuSeal();
+
+    if (!subscriptionOwner) {
+      // No subscription owner found - allow operation (no PAYG restrictions)
+      return res.status(200).json({
+        success: true,
+        allowed: true,
+        cost: 0,
+        balance: 0,
+        model: null,
+        message: 'No subscription found - operation allowed'
+      });
+    }
+
+    // Check credits for document signing
+    const creditCheck = await checkCreditsForOperation(subscriptionOwner.id, 'document_signing');
+
+    if (!creditCheck.allowed) {
+      return res.status(200).json({
+        success: true,
+        allowed: false,
+        cost: creditCheck.cost,
+        balance: creditCheck.balance,
+        model: creditCheck.model,
+        tier: creditCheck.tier,
+        reason: creditCheck.reason,
+        message: `Insufficient credits. Document signing costs $${(creditCheck.cost / 100).toFixed(2)} but your balance is $${(creditCheck.balance / 100).toFixed(2)}.`
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      allowed: true,
+      cost: creditCheck.cost,
+      balance: creditCheck.balance,
+      model: creditCheck.model,
+      tier: creditCheck.tier,
+      message: creditCheck.model === 'payg'
+        ? `Document signing will cost $${(creditCheck.cost / 100).toFixed(2)}. Current balance: $${(creditCheck.balance / 100).toFixed(2)}.`
+        : 'Document signing allowed'
+    });
+  } catch (error) {
+    console.error('[check-signing-credits] Error:', error);
+    return res.status(500).json({
+      success: false,
+      error: 'Failed to check credits',
+      message: error.message
+    });
+  }
+}));
+
+/**
+ * @route   POST /api/docuseal/deduct-signing-credits
+ * @desc    Deduct credits for document signing (called when user starts signing)
+ * @access  Private (requires authentication)
+ * @returns {object} { success: boolean, cost: number, newBalance: number, ... }
+ */
+router.post('/deduct-signing-credits', authenticate, catchAsync(async (req, res) => {
+  try {
+    // Find the subscription owner (admin)
+    const subscriptionOwner = await findSubscriptionOwnerForDocuSeal();
+
+    if (!subscriptionOwner) {
+      // No subscription owner found - allow operation (no PAYG restrictions)
+      return res.status(200).json({
+        success: true,
+        deducted: false,
+        cost: 0,
+        balance: 0,
+        model: null,
+        message: 'No subscription found - no credits deducted'
+      });
+    }
+
+    // Check if there are enough credits first
+    const creditCheck = await checkCreditsForOperation(subscriptionOwner.id, 'document_signing');
+
+    if (!creditCheck.allowed) {
+      return res.status(402).json({
+        success: false,
+        error: 'INSUFFICIENT_CREDITS',
+        cost: creditCheck.cost,
+        balance: creditCheck.balance,
+        model: creditCheck.model,
+        tier: creditCheck.tier,
+        message: `Insufficient credits. Document signing costs $${(creditCheck.cost / 100).toFixed(2)} but your balance is $${(creditCheck.balance / 100).toFixed(2)}.`
+      });
+    }
+
+    // Deduct credits
+    const deductResult = await deductCreditsForOperation(subscriptionOwner.id, 'document_signing');
+
+    if (deductResult.success) {
+      console.log('[deduct-signing-credits] Credits deducted:', {
+        cost: deductResult.cost,
+        newBalance: deductResult.newBalance,
+        model: deductResult.model
+      });
+
+      return res.status(200).json({
+        success: true,
+        deducted: true,
+        cost: deductResult.cost,
+        newBalance: deductResult.newBalance,
+        model: deductResult.model,
+        tier: deductResult.tier,
+        message: `$${(deductResult.cost / 100).toFixed(2)} credits deducted. New balance: $${(deductResult.newBalance / 100).toFixed(2)}.`
+      });
+    } else {
+      return res.status(402).json({
+        success: false,
+        error: 'DEDUCTION_FAILED',
+        cost: deductResult.cost,
+        balance: deductResult.balance,
+        message: deductResult.reason || 'Failed to deduct credits'
+      });
+    }
+  } catch (error) {
+    console.error('[deduct-signing-credits] Error:', error);
+    return res.status(500).json({
+      success: false,
+      error: 'SERVER_ERROR',
+      message: error.message
+    });
+  }
+}));
 
 /**
  * @route   GET /api/docuseal/submissions/:submissionId
@@ -589,6 +750,29 @@ router.post('/webhook', catchAsync(async (req, res) => {
 
     console.log('[DocuSeal Webhook] Submission created successfully:', newSubmission);
 
+    // Deduct credits for document signing (PAYG model)
+    try {
+      const subscriptionOwner = await findSubscriptionOwnerForDocuSeal();
+      if (subscriptionOwner) {
+        console.log('[DocuSeal Webhook] Found subscription owner:', subscriptionOwner.id);
+        const deductResult = await deductCreditsForOperation(subscriptionOwner.id, 'document_signing');
+        if (deductResult.success) {
+          console.log('[DocuSeal Webhook] Credits deducted:', {
+            cost: deductResult.cost,
+            newBalance: deductResult.newBalance,
+            model: deductResult.model
+          });
+        } else {
+          console.log('[DocuSeal Webhook] Credit deduction skipped or failed:', deductResult);
+        }
+      } else {
+        console.log('[DocuSeal Webhook] No subscription owner found - skipping credit deduction');
+      }
+    } catch (creditError) {
+      console.error('[DocuSeal Webhook] Error deducting credits:', creditError);
+      // Don't fail the webhook - submission was created successfully
+    }
+
     return res.status(201).json({
       success: true,
       message: 'Submission created successfully',
@@ -781,6 +965,7 @@ router.post('/webhook', catchAsync(async (req, res) => {
 router.get('/verifyUserSignature', authenticate, catchAsync(async (req, res) => {
   // Get user ID from authenticated token
   const userId = req.auth.userId || req.user.id;
+  const supabase = require('../config/database').getSupabase();
 
   // Find the user to get their email
   const user = await User.findById(userId);
@@ -807,7 +992,8 @@ router.get('/verifyUserSignature', authenticate, catchAsync(async (req, res) => 
   console.log('[verifyUserSignature] DocuSeal submissions:', userSubmissions.map(s => ({
     id: s.id,
     submissionId: s.submissionId,
-    type: typeof s.submissionId
+    type: typeof s.submissionId,
+    creditsCharged: s.credits_charged
   })));
 
   // Extract unique submission IDs that are already used in payments
@@ -830,6 +1016,57 @@ router.get('/verifyUserSignature', authenticate, catchAsync(async (req, res) => 
   });
 
   const hasFreeSubmission = freeSubmissions.length > 0;
+
+  // Deduct credits for any completed submissions that haven't been charged yet
+  // This handles the case where webhooks can't reach localhost
+  console.log('[verifyUserSignature] hasFreeSubmission:', hasFreeSubmission);
+  console.log('[verifyUserSignature] freeSubmissions:', freeSubmissions.map(s => ({
+    id: s.id,
+    status: s.status,
+    credits_charged: s.credits_charged
+  })));
+
+  if (hasFreeSubmission) {
+    const unchargedSubmissions = freeSubmissions.filter(s => !s.credits_charged);
+    console.log('[verifyUserSignature] unchargedSubmissions count:', unchargedSubmissions.length);
+
+    for (const submission of unchargedSubmissions) {
+      try {
+        console.log('[verifyUserSignature] Processing submission:', submission.id);
+        const subscriptionOwner = await findSubscriptionOwnerForDocuSeal();
+        console.log('[verifyUserSignature] subscriptionOwner:', subscriptionOwner);
+
+        if (subscriptionOwner) {
+          console.log('[verifyUserSignature] Deducting credits for submission:', submission.id);
+          const deductResult = await deductCreditsForOperation(subscriptionOwner.id, 'document_signing');
+          console.log('[verifyUserSignature] deductResult:', deductResult);
+
+          if (deductResult.success) {
+            // Mark submission as charged
+            const { error: updateError } = await supabase
+              .from('docuseal_submissions')
+              .update({ credits_charged: true })
+              .eq('id', submission.id);
+
+            if (updateError) {
+              console.error('[verifyUserSignature] Error marking submission as charged:', updateError);
+            } else {
+              console.log('[verifyUserSignature] Credits deducted and submission marked:', {
+                submissionId: submission.id,
+                cost: deductResult.cost,
+                newBalance: deductResult.newBalance
+              });
+            }
+          } else {
+            console.log('[verifyUserSignature] Credit deduction failed:', deductResult.reason || deductResult);
+          }
+        }
+      } catch (creditError) {
+        console.error('[verifyUserSignature] Error deducting credits:', creditError);
+        // Continue processing - don't fail the verification
+      }
+    }
+  }
 
   res.status(200).json({
     success: true,
