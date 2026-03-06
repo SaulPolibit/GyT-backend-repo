@@ -375,11 +375,18 @@ router.post('/cancel-subscription', authenticate, catchAsync(async (req, res) =>
   }
 
   // Check 12-month minimum commitment
-  const { data: userData } = await supabase
+  const { data: userData, error: userDataError } = await supabase
     .from('users')
     .select('subscription_start_date')
     .eq('id', req.user.id)
     .single();
+
+  console.log('[Stripe Cancel] Checking commitment:', {
+    userId: req.user.id,
+    userData,
+    userDataError,
+    subscription_start_date: userData?.subscription_start_date
+  });
 
   if (userData?.subscription_start_date) {
     const startDate = new Date(userData.subscription_start_date);
@@ -389,10 +396,20 @@ router.post('/cancel-subscription', authenticate, catchAsync(async (req, res) =>
 
     const MINIMUM_MONTHS = 12;
 
+    console.log('[Stripe Cancel] Commitment check:', {
+      startDate: startDate.toISOString(),
+      now: now.toISOString(),
+      monthsElapsed,
+      MINIMUM_MONTHS,
+      shouldBlock: monthsElapsed < MINIMUM_MONTHS
+    });
+
     if (monthsElapsed < MINIMUM_MONTHS) {
       const remainingMonths = MINIMUM_MONTHS - monthsElapsed;
       const canCancelDate = new Date(startDate);
       canCancelDate.setMonth(canCancelDate.getMonth() + MINIMUM_MONTHS);
+
+      console.log('[Stripe Cancel] BLOCKING cancellation - minimum commitment not met');
 
       return res.status(403).json({
         success: false,
@@ -403,6 +420,8 @@ router.post('/cancel-subscription', authenticate, catchAsync(async (req, res) =>
         canCancelDate: canCancelDate.toISOString()
       });
     }
+  } else {
+    console.log('[Stripe Cancel] No subscription_start_date found, skipping commitment check');
   }
 
   const subscription = await stripeService.cancelSubscription(
@@ -422,6 +441,55 @@ router.post('/cancel-subscription', authenticate, catchAsync(async (req, res) =>
     message: immediately
       ? 'Subscription canceled immediately'
       : 'Subscription will cancel at the end of the current period'
+  });
+}));
+
+/**
+ * @route   GET /api/stripe/commitment-status
+ * @desc    Get subscription commitment status (12-month minimum)
+ * @access  Private
+ */
+router.get('/commitment-status', authenticate, catchAsync(async (req, res) => {
+  const supabase = require('../config/database').getSupabase();
+
+  const { data: userData } = await supabase
+    .from('users')
+    .select('subscription_start_date, subscription_status')
+    .eq('id', req.user.id)
+    .single();
+
+  if (!userData?.subscription_start_date) {
+    return res.json({
+      success: true,
+      canCancel: true,
+      hasCommitment: false,
+      message: 'No commitment period found'
+    });
+  }
+
+  const startDate = new Date(userData.subscription_start_date);
+  const now = new Date();
+  const monthsElapsed = (now.getFullYear() - startDate.getFullYear()) * 12 +
+                        (now.getMonth() - startDate.getMonth());
+
+  const MINIMUM_MONTHS = 12;
+  const canCancel = monthsElapsed >= MINIMUM_MONTHS;
+  const remainingMonths = Math.max(0, MINIMUM_MONTHS - monthsElapsed);
+
+  const canCancelDate = new Date(startDate);
+  canCancelDate.setMonth(canCancelDate.getMonth() + MINIMUM_MONTHS);
+
+  res.json({
+    success: true,
+    canCancel,
+    hasCommitment: true,
+    startDate: startDate.toISOString(),
+    monthsElapsed,
+    remainingMonths,
+    canCancelDate: canCancelDate.toISOString(),
+    message: canCancel
+      ? 'Commitment period completed. You can cancel anytime.'
+      : `${remainingMonths} month(s) remaining in your 12-month commitment.`
   });
 }));
 
@@ -622,13 +690,24 @@ router.post(
           const subscription = event.data.object;
           console.log(`[Stripe Webhook] Subscription ${event.type}: ${subscription.id}`);
 
+          // Build update object
+          const updateData = {
+            stripeSubscriptionId: subscription.id,
+            subscriptionStatus: subscription.status
+          };
+
+          // Set subscription_start_date only on creation (12-month minimum commitment)
+          if (event.type === 'customer.subscription.created') {
+            // Use Stripe's subscription start_date or current period start
+            const startTimestamp = subscription.start_date || subscription.current_period_start;
+            updateData.subscriptionStartDate = new Date(startTimestamp * 1000).toISOString();
+            console.log(`[Stripe Webhook] Setting subscription start date: ${updateData.subscriptionStartDate}`);
+          }
+
           // Update user subscription status
           const updatedUser = await User.findOneAndUpdate(
             { stripeCustomerId: subscription.customer },
-            {
-              stripeSubscriptionId: subscription.id,
-              subscriptionStatus: subscription.status
-            }
+            updateData
           );
 
           if (updatedUser) {

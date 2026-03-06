@@ -842,6 +842,7 @@ class User {
       stripeCustomerId: dbUser.stripe_customer_id,
       stripeSubscriptionId: dbUser.stripe_subscription_id,
       subscriptionStatus: dbUser.subscription_status,
+      subscriptionStartDate: dbUser.subscription_start_date,
       subscriptionModel: dbUser.subscription_model, // 'tier_based' or 'payg'
       subscriptionTier: dbUser.subscription_tier, // 'starter', 'professional', 'growth', 'enterprise'
       // Stripe Connect fields (for investors)
@@ -941,6 +942,7 @@ class User {
       subscriptionStatus: 'subscription_status',
       subscriptionModel: 'subscription_model',
       subscriptionTier: 'subscription_tier',
+      subscriptionStartDate: 'subscription_start_date',
       // Stripe Connect fields (for investors)
       stripeAccountId: 'stripe_account_id',
       stripeOnboardingComplete: 'stripe_onboarding_complete',
