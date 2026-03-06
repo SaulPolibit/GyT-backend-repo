@@ -758,6 +758,35 @@ router.post(
           // Check for extra purchases via metadata
           const { purchaseType, userId: purchaseUserId, extraInvestors, extraCommitment, millionsToAdd } = session.metadata || {};
 
+          // Check if this session was already processed (prevent duplicates with verify-extra-purchase endpoint)
+          const supabaseForWebhook = require('../config/database').getSupabase();
+          const { data: existingWebhookSession } = await supabaseForWebhook
+            .from('processed_stripe_sessions')
+            .select('id')
+            .eq('session_id', session.id)
+            .maybeSingle();
+
+          if (existingWebhookSession) {
+            console.log(`[Stripe Webhook] Session ${session.id} already processed, skipping`);
+            break;
+          }
+
+          // Mark session as processed FIRST (prevents race conditions with verify endpoint)
+          if (purchaseUserId && (purchaseType === 'extra_investors' || purchaseType === 'extra_aum' || purchaseType === 'credit_topup' || purchaseType === 'subscription')) {
+            const { error: webhookInsertError } = await supabaseForWebhook
+              .from('processed_stripe_sessions')
+              .insert({ session_id: session.id, user_id: purchaseUserId });
+
+            if (webhookInsertError) {
+              if (webhookInsertError.code === '23505') {
+                console.log(`[Stripe Webhook] Session ${session.id} already processed (concurrent), skipping`);
+                break;
+              }
+              console.error(`[Stripe Webhook] Error marking session as processed:`, webhookInsertError);
+              // Continue anyway - better to potentially double-process than miss a payment
+            }
+          }
+
           if (purchaseType === 'extra_investors' && purchaseUserId && extraInvestors) {
             console.log(`[Stripe Webhook] Processing extra investors purchase: ${extraInvestors} for user ${purchaseUserId}`);
             try {
