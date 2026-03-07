@@ -1641,16 +1641,18 @@ router.post('/purchase-extra-investors', authenticate, catchAsync(async (req, re
   }
 
   try {
-    const priceId = process.env.STRIPE_PRICE_EXTRA_INVESTORS;
+    const priceId = process.env.STRIPE_PRICE_EXTRA_INVESTOR;
+    console.log('[Stripe] STRIPE_PRICE_EXTRA_INVESTOR:', priceId ? 'SET' : 'NOT SET', priceId);
     if (!priceId) {
       return res.status(500).json({
         success: false,
-        message: 'Extra investors price not configured'
+        message: 'Extra investors price not configured. Set STRIPE_PRICE_EXTRA_INVESTOR env var.'
       });
     }
 
-    // Calculate quantity (price is per 10 investors, so +10 = 1 unit, +25 = 2.5 rounded up to 3, etc.)
-    const quantity = Math.ceil(extraInvestors / 10);
+    // Quantity = number of investors to add
+    // If Stripe price is per investor: +10 = 10 units, +25 = 25 units, +50 = 50 units
+    const quantity = extraInvestors;
 
     const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
 
@@ -1713,13 +1715,13 @@ router.post('/purchase-extra-aum', authenticate, catchAsync(async (req, res) => 
     if (!priceId) {
       return res.status(500).json({
         success: false,
-        message: 'Extra AUM price not configured'
+        message: 'Extra AUM price not configured. Set STRIPE_PRICE_EXTRA_AUM env var.'
       });
     }
 
-    // Calculate quantity (price is per $1M, so $1M = 1 unit, $5M = 5 units)
+    // Calculate quantity (price is per $1M)
     const millionsToAdd = extraCommitment / 1000000;
-    const quantity = Math.ceil(millionsToAdd);
+    const quantity = Math.ceil(millionsToAdd); // +1M = 1 unit
 
     const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
 
