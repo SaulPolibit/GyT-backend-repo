@@ -2,12 +2,12 @@
  * Subscription Limits Service
  * Handles validation of subscription limits for structure creation and investor creation
  *
- * Limits are stored in the database (users table) and can be increased
- * when users purchase Extra AUM or Extra Investors
+ * Subscription data is stored in the platform_subscription table (single record per platform)
+ * All limits apply to the entire platform, not individual users
  *
  * Supports two subscription models:
  * - tier_based: Limits based on total AUM commitment and investor count
- * - payg: Limits based on investor count only
+ * - payg: Limits based on investor count only, with credit-based billing
  */
 
 const { getSupabase } = require('../config/database');
@@ -143,6 +143,226 @@ const formatCurrency = (amount) => {
 };
 
 // ============================================================================
+// PLATFORM SUBSCRIPTION FUNCTIONS
+// ============================================================================
+
+/**
+ * Get the active platform subscription
+ * @returns {Promise<Object|null>} Platform subscription or null
+ */
+const getPlatformSubscription = async () => {
+  const supabase = getSupabase();
+
+  const { data: subscription, error } = await supabase
+    .from('platform_subscription')
+    .select('*')
+    .in('subscription_status', ['active', 'trialing'])
+    .limit(1)
+    .single();
+
+  if (error && error.code !== 'PGRST116') { // PGRST116 = no rows returned
+    console.error('[SubscriptionLimits] Error fetching platform subscription:', error);
+  }
+
+  return subscription || null;
+};
+
+/**
+ * Get subscription info with defaults applied
+ * This is the main function for getting subscription data
+ * @returns {Promise<Object>} Subscription info with limits
+ */
+const getSubscription = async () => {
+  const subscription = await getPlatformSubscription();
+
+  if (!subscription) {
+    console.log('[SubscriptionLimits] No active platform subscription found');
+    return {
+      model: null,
+      tier: null,
+      status: null,
+      stripeSubscriptionId: null,
+      maxTotalCommitment: 0,
+      maxInvestors: 0,
+      extraCommitmentPurchased: 0,
+      extraInvestorsPurchased: 0,
+      creditBalance: 0,
+      emissionsAvailable: 0,
+      emissionsUsed: 0,
+      tierName: 'No Subscription',
+      hasSubscription: false
+    };
+  }
+
+  const model = subscription.subscription_model || 'tier_based';
+  const tier = subscription.subscription_tier || 'starter';
+  const defaults = getDefaultLimits(model, tier);
+
+  const result = {
+    id: subscription.id,
+    model,
+    tier,
+    status: subscription.subscription_status,
+    stripeSubscriptionId: subscription.stripe_subscription_id,
+    stripeCustomerId: subscription.stripe_customer_id,
+    subscriptionStartDate: subscription.subscription_start_date,
+    // Limits (with fallback to defaults)
+    maxTotalCommitment: subscription.max_total_commitment !== null
+      ? parseFloat(subscription.max_total_commitment)
+      : defaults.maxTotalCommitment,
+    maxInvestors: subscription.max_investors !== null
+      ? subscription.max_investors
+      : defaults.maxInvestors,
+    // Extra purchases
+    extraCommitmentPurchased: parseFloat(subscription.extra_commitment_purchased) || 0,
+    extraInvestorsPurchased: subscription.extra_investors_purchased || 0,
+    // Credits (PAYG)
+    creditBalance: subscription.credit_balance || 0,
+    // Emissions
+    emissionsAvailable: subscription.emissions_available || 0,
+    emissionsUsed: subscription.emissions_used || 0,
+    // Display
+    tierName: getTierName(model, tier),
+    hasSubscription: true,
+    // Management
+    managedByUserId: subscription.managed_by_user_id
+  };
+
+  console.log('[SubscriptionLimits] Platform subscription:', result);
+
+  return result;
+};
+
+/**
+ * Get subscription for a specific user (returns platform subscription)
+ * This maintains backward compatibility with existing code
+ * @param {string} userId - User ID (not used, platform subscription applies to all)
+ * @returns {Promise<Object>} Subscription info
+ */
+const getUserSubscription = async (userId) => {
+  console.log('[SubscriptionLimits] getUserSubscription called for userId:', userId);
+  // All users share the same platform subscription
+  return getSubscription();
+};
+
+/**
+ * Create or update platform subscription
+ * @param {Object} data - Subscription data
+ * @returns {Promise<Object>} Created/updated subscription
+ */
+const upsertPlatformSubscription = async (data) => {
+  const supabase = getSupabase();
+
+  // Check if subscription exists
+  const existing = await getPlatformSubscription();
+
+  const subscriptionData = {
+    stripe_subscription_id: data.stripeSubscriptionId,
+    stripe_customer_id: data.stripeCustomerId,
+    subscription_model: data.subscriptionModel,
+    subscription_tier: data.subscriptionTier,
+    subscription_status: data.subscriptionStatus,
+    subscription_start_date: data.subscriptionStartDate,
+    max_total_commitment: data.maxTotalCommitment,
+    max_investors: data.maxInvestors,
+    extra_commitment_purchased: data.extraCommitmentPurchased || 0,
+    extra_investors_purchased: data.extraInvestorsPurchased || 0,
+    credit_balance: data.creditBalance || 0,
+    emissions_available: data.emissionsAvailable || 0,
+    emissions_used: data.emissionsUsed || 0,
+    managed_by_user_id: data.managedByUserId
+  };
+
+  let result;
+
+  if (existing) {
+    // Update existing subscription
+    const { data: updated, error } = await supabase
+      .from('platform_subscription')
+      .update(subscriptionData)
+      .eq('id', existing.id)
+      .select()
+      .single();
+
+    if (error) {
+      console.error('[SubscriptionLimits] Error updating platform subscription:', error);
+      throw error;
+    }
+    result = updated;
+    console.log('[SubscriptionLimits] Updated platform subscription:', result.id);
+  } else {
+    // Create new subscription
+    const { data: created, error } = await supabase
+      .from('platform_subscription')
+      .insert(subscriptionData)
+      .select()
+      .single();
+
+    if (error) {
+      console.error('[SubscriptionLimits] Error creating platform subscription:', error);
+      throw error;
+    }
+    result = created;
+    console.log('[SubscriptionLimits] Created platform subscription:', result.id);
+  }
+
+  return result;
+};
+
+/**
+ * Update platform subscription fields
+ * @param {Object} updates - Fields to update
+ * @returns {Promise<Object>} Updated subscription
+ */
+const updatePlatformSubscription = async (updates) => {
+  const supabase = getSupabase();
+
+  const existing = await getPlatformSubscription();
+  if (!existing) {
+    throw new Error('No active platform subscription found');
+  }
+
+  // Map camelCase to snake_case
+  const dbUpdates = {};
+  const fieldMapping = {
+    stripeSubscriptionId: 'stripe_subscription_id',
+    stripeCustomerId: 'stripe_customer_id',
+    subscriptionModel: 'subscription_model',
+    subscriptionTier: 'subscription_tier',
+    subscriptionStatus: 'subscription_status',
+    subscriptionStartDate: 'subscription_start_date',
+    maxTotalCommitment: 'max_total_commitment',
+    maxInvestors: 'max_investors',
+    extraCommitmentPurchased: 'extra_commitment_purchased',
+    extraInvestorsPurchased: 'extra_investors_purchased',
+    creditBalance: 'credit_balance',
+    emissionsAvailable: 'emissions_available',
+    emissionsUsed: 'emissions_used',
+    managedByUserId: 'managed_by_user_id'
+  };
+
+  for (const [key, value] of Object.entries(updates)) {
+    const dbKey = fieldMapping[key] || key;
+    dbUpdates[dbKey] = value;
+  }
+
+  const { data, error } = await supabase
+    .from('platform_subscription')
+    .update(dbUpdates)
+    .eq('id', existing.id)
+    .select()
+    .single();
+
+  if (error) {
+    console.error('[SubscriptionLimits] Error updating platform subscription:', error);
+    throw error;
+  }
+
+  console.log('[SubscriptionLimits] Updated platform subscription:', data.id);
+  return data;
+};
+
+// ============================================================================
 // DATABASE QUERY FUNCTIONS
 // ============================================================================
 
@@ -153,7 +373,6 @@ const formatCurrency = (amount) => {
 const countInvestors = async () => {
   const supabase = getSupabase();
 
-  // Count all users with role 3 (investors)
   const { count, error } = await supabase
     .from('users')
     .select('id', { count: 'exact', head: true })
@@ -170,17 +389,15 @@ const countInvestors = async () => {
 };
 
 /**
- * Calculate total commitment across all structures for a user
- * @param {string} userId - The admin/fund manager user ID
+ * Calculate total commitment across all structures
  * @returns {Promise<number>} Total commitment in dollars
  */
-const calculateTotalCommitment = async (userId) => {
+const calculateTotalCommitment = async () => {
   const supabase = getSupabase();
 
   const { data: structures, error } = await supabase
     .from('structures')
-    .select('total_commitment')
-    .eq('created_by', userId);
+    .select('total_commitment');
 
   if (error) {
     console.error('[SubscriptionLimits] Error calculating total commitment:', error);
@@ -198,66 +415,6 @@ const calculateTotalCommitment = async (userId) => {
   return total;
 };
 
-/**
- * Get user's subscription info and limits from database
- * @param {string} userId - User ID
- * @returns {Promise<Object>} Subscription info with limits
- */
-const getUserSubscription = async (userId) => {
-  const supabase = getSupabase();
-
-  console.log('[SubscriptionLimits] Fetching subscription for user:', userId);
-
-  const { data: user, error } = await supabase
-    .from('users')
-    .select(`
-      subscription_model,
-      subscription_tier,
-      subscription_status,
-      stripe_subscription_id,
-      max_total_commitment,
-      max_investors,
-      extra_commitment_purchased,
-      extra_investors_purchased,
-      credit_balance
-    `)
-    .eq('id', userId)
-    .single();
-
-  if (error) {
-    console.error('[SubscriptionLimits] Error fetching user subscription:', error);
-    throw error;
-  }
-
-  console.log('[SubscriptionLimits] Raw user data:', user);
-
-  const model = user.subscription_model || 'tier_based';
-  const tier = user.subscription_tier || 'starter';
-  const defaults = getDefaultLimits(model, tier);
-
-  // Use database values if set, otherwise fall back to defaults
-  const result = {
-    model,
-    tier,
-    status: user.subscription_status,
-    stripeSubscriptionId: user.stripe_subscription_id,
-    // Limits from database (with fallback to defaults)
-    maxTotalCommitment: user.max_total_commitment !== null ? parseFloat(user.max_total_commitment) : defaults.maxTotalCommitment,
-    maxInvestors: user.max_investors !== null ? user.max_investors : defaults.maxInvestors,
-    // Track extras purchased
-    extraCommitmentPurchased: parseFloat(user.extra_commitment_purchased) || 0,
-    extraInvestorsPurchased: user.extra_investors_purchased || 0,
-    // Credit balance for PAYG (in cents)
-    creditBalance: user.credit_balance || 0,
-    // Tier name for display
-    tierName: getTierName(model, tier)
-  };
-
-  console.log('[SubscriptionLimits] Parsed subscription with limits:', result);
-
-  return result;
-};
-
 // ============================================================================
 // VALIDATION FUNCTIONS
 // ============================================================================
@@ -266,7 +423,7 @@ const getUserSubscription = async (userId) => {
  * Validate if a new structure can be created based on subscription limits
  * Only applies to tier_based model (checks total commitment)
  *
- * @param {string} userId - The admin/fund manager user ID
+ * @param {string} userId - User ID (not used, platform-wide validation)
  * @param {number} newCommitment - The total commitment of the new structure
  * @returns {Promise<Object>} Validation result
  */
@@ -274,8 +431,15 @@ const validateStructureCreation = async (userId, newCommitment = 0) => {
   try {
     console.log('[SubscriptionLimits] validateStructureCreation called:', { userId, newCommitment });
 
-    const subscription = await getUserSubscription(userId);
-    console.log('[SubscriptionLimits] User subscription:', subscription);
+    const subscription = await getSubscription();
+    console.log('[SubscriptionLimits] Platform subscription:', subscription);
+
+    if (!subscription.hasSubscription) {
+      return {
+        allowed: false,
+        reason: 'No active subscription. Please subscribe to create structures.'
+      };
+    }
 
     // Only tier_based model has commitment limits
     if (subscription.model !== 'tier_based') {
@@ -283,7 +447,7 @@ const validateStructureCreation = async (userId, newCommitment = 0) => {
       return { allowed: true };
     }
 
-    const currentTotal = await calculateTotalCommitment(userId);
+    const currentTotal = await calculateTotalCommitment();
     const projectedTotal = currentTotal + (parseFloat(newCommitment) || 0);
     const maxAllowed = subscription.maxTotalCommitment;
 
@@ -326,7 +490,6 @@ const validateStructureCreation = async (userId, newCommitment = 0) => {
     };
   } catch (error) {
     console.error('[SubscriptionLimits] validateStructureCreation error:', error);
-    console.error('[SubscriptionLimits] Error stack:', error.stack);
     return {
       allowed: false,
       reason: `Validation error: ${error.message}. Please contact support.`,
@@ -337,17 +500,23 @@ const validateStructureCreation = async (userId, newCommitment = 0) => {
 
 /**
  * Validate if a new investor can be created based on subscription limits
- * Reads limits from database (supports Extra Investors purchases)
  *
- * @param {string} userId - The admin/fund manager user ID
+ * @param {string} userId - User ID (not used, platform-wide validation)
  * @returns {Promise<Object>} Validation result
  */
 const validateInvestorCreation = async (userId) => {
   try {
-    console.log('[SubscriptionLimits] validateInvestorCreation called for userId:', userId);
+    console.log('[SubscriptionLimits] validateInvestorCreation called');
 
-    const subscription = await getUserSubscription(userId);
-    console.log('[SubscriptionLimits] User subscription:', subscription);
+    const subscription = await getSubscription();
+    console.log('[SubscriptionLimits] Platform subscription:', subscription);
+
+    if (!subscription.hasSubscription) {
+      return {
+        allowed: false,
+        reason: 'No active subscription. Please subscribe to create investors.'
+      };
+    }
 
     const currentCount = await countInvestors();
     const projectedCount = currentCount + 1;
@@ -389,7 +558,6 @@ const validateInvestorCreation = async (userId) => {
     };
   } catch (error) {
     console.error('[SubscriptionLimits] validateInvestorCreation error:', error);
-    console.error('[SubscriptionLimits] Error stack:', error.stack);
     return {
       allowed: false,
       reason: `Validation error: ${error.message}. Please contact support.`,
@@ -399,34 +567,40 @@ const validateInvestorCreation = async (userId) => {
 };
 
 /**
- * Get current usage statistics for a user's subscription
- * @param {string} userId - User ID
+ * Get current usage statistics for the platform subscription
+ * @param {string} userId - User ID (not used, platform-wide)
  * @returns {Promise<Object>} Usage stats
  */
 const getSubscriptionUsage = async (userId) => {
   try {
-    const subscription = await getUserSubscription(userId);
+    const subscription = await getSubscription();
     const currentInvestors = await countInvestors();
-    const currentCommitment = await calculateTotalCommitment(userId);
+    const currentCommitment = await calculateTotalCommitment();
 
     return {
       model: subscription.model,
       tier: subscription.tier,
       status: subscription.status,
+      hasSubscription: subscription.hasSubscription,
       investors: {
         current: currentInvestors,
         limit: subscription.maxInvestors,
         remaining: Math.max(0, subscription.maxInvestors - currentInvestors),
-        percentUsed: Math.round((currentInvestors / subscription.maxInvestors) * 100)
+        percentUsed: subscription.maxInvestors > 0
+          ? Math.round((currentInvestors / subscription.maxInvestors) * 100)
+          : 0
       },
       commitment: subscription.model === 'tier_based' ? {
         current: currentCommitment,
         limit: subscription.maxTotalCommitment,
         remaining: Math.max(0, subscription.maxTotalCommitment - currentCommitment),
-        percentUsed: Math.round((currentCommitment / subscription.maxTotalCommitment) * 100)
+        percentUsed: subscription.maxTotalCommitment > 0
+          ? Math.round((currentCommitment / subscription.maxTotalCommitment) * 100)
+          : 0
       } : null,
-      // Credit balance for PAYG model (in cents)
       creditBalance: subscription.creditBalance,
+      emissionsAvailable: subscription.emissionsAvailable,
+      emissionsUsed: subscription.emissionsUsed,
       extras: {
         commitmentPurchased: subscription.extraCommitmentPurchased,
         investorsPurchased: subscription.extraInvestorsPurchased
@@ -444,127 +618,128 @@ const getSubscriptionUsage = async (userId) => {
   }
 };
 
-/**
- * Update user's subscription model and tier
- * @param {string} userId - User ID
- * @param {string} model - 'tier_based' or 'payg'
- * @param {string} tier - Subscription tier
- * @returns {Promise<Object>} Updated user
- */
-const updateUserSubscription = async (userId, model, tier) => {
-  const supabase = getSupabase();
-
-  // Get default limits for the new tier
-  const defaults = getDefaultLimits(model, tier);
-
-  const { data, error } = await supabase
-    .from('users')
-    .update({
-      subscription_model: model,
-      subscription_tier: tier,
-      max_total_commitment: defaults.maxTotalCommitment,
-      max_investors: defaults.maxInvestors,
-      // Reset extras when changing tier (or keep them - business decision)
-      extra_commitment_purchased: 0,
-      extra_investors_purchased: 0
-    })
-    .eq('id', userId)
-    .select()
-    .single();
-
-  if (error) {
-    console.error('[SubscriptionLimits] Error updating subscription:', error);
-    throw error;
-  }
-
-  return data;
-};
+// ============================================================================
+// SUBSCRIPTION UPDATE FUNCTIONS
+// ============================================================================
 
 /**
- * Add extra investors to user's subscription
- * @param {string} userId - User ID
+ * Add extra investors to platform subscription
+ * @param {string} userId - User ID (not used)
  * @param {number} extraInvestors - Number of extra investors to add
- * @returns {Promise<Object>} Updated user
+ * @returns {Promise<Object>} Updated subscription
  */
 const addExtraInvestors = async (userId, extraInvestors) => {
-  const supabase = getSupabase();
-
-  // First get current values
-  const { data: user, error: fetchError } = await supabase
-    .from('users')
-    .select('max_investors, extra_investors_purchased')
-    .eq('id', userId)
-    .single();
-
-  if (fetchError) {
-    throw fetchError;
+  const subscription = await getPlatformSubscription();
+  if (!subscription) {
+    throw new Error('No active platform subscription found');
   }
 
-  const currentMax = user.max_investors || 0;
-  const currentExtra = user.extra_investors_purchased || 0;
+  const currentMax = subscription.max_investors || 0;
+  const currentExtra = subscription.extra_investors_purchased || 0;
 
-  const { data, error } = await supabase
-    .from('users')
-    .update({
-      max_investors: currentMax + extraInvestors,
-      extra_investors_purchased: currentExtra + extraInvestors
-    })
-    .eq('id', userId)
-    .select()
-    .single();
+  const updated = await updatePlatformSubscription({
+    maxInvestors: currentMax + extraInvestors,
+    extraInvestorsPurchased: currentExtra + extraInvestors
+  });
 
-  if (error) {
-    console.error('[SubscriptionLimits] Error adding extra investors:', error);
-    throw error;
-  }
+  console.log('[SubscriptionLimits] Added extra investors:', {
+    extraInvestors,
+    newMax: updated.max_investors
+  });
 
-  console.log('[SubscriptionLimits] Added extra investors:', { userId, extraInvestors, newMax: data.max_investors });
-
-  return data;
+  return updated;
 };
 
 /**
- * Add extra AUM commitment to user's subscription
- * @param {string} userId - User ID
+ * Add extra AUM commitment to platform subscription
+ * @param {string} userId - User ID (not used)
  * @param {number} extraCommitment - Extra commitment amount to add
- * @returns {Promise<Object>} Updated user
+ * @returns {Promise<Object>} Updated subscription
  */
 const addExtraCommitment = async (userId, extraCommitment) => {
-  const supabase = getSupabase();
-
-  // First get current values
-  const { data: user, error: fetchError } = await supabase
-    .from('users')
-    .select('max_total_commitment, extra_commitment_purchased')
-    .eq('id', userId)
-    .single();
-
-  if (fetchError) {
-    throw fetchError;
+  const subscription = await getPlatformSubscription();
+  if (!subscription) {
+    throw new Error('No active platform subscription found');
   }
 
-  const currentMax = parseFloat(user.max_total_commitment) || 0;
-  const currentExtra = parseFloat(user.extra_commitment_purchased) || 0;
+  const currentMax = parseFloat(subscription.max_total_commitment) || 0;
+  const currentExtra = parseFloat(subscription.extra_commitment_purchased) || 0;
 
-  const { data, error } = await supabase
-    .from('users')
-    .update({
-      max_total_commitment: currentMax + extraCommitment,
-      extra_commitment_purchased: currentExtra + extraCommitment
-    })
-    .eq('id', userId)
-    .select()
-    .single();
+  const updated = await updatePlatformSubscription({
+    maxTotalCommitment: currentMax + extraCommitment,
+    extraCommitmentPurchased: currentExtra + extraCommitment
+  });
 
-  if (error) {
-    console.error('[SubscriptionLimits] Error adding extra commitment:', error);
-    throw error;
-  }
+  console.log('[SubscriptionLimits] Added extra commitment:', {
+    extraCommitment,
+    newMax: updated.max_total_commitment
+  });
 
-  console.log('[SubscriptionLimits] Added extra commitment:', { userId, extraCommitment, newMax: data.max_total_commitment });
-
-  return data;
+  return updated;
 };
+
+/**
+ * Add credits to platform subscription (for PAYG model)
+ * @param {string} userId - User ID (not used)
+ * @param {number} amountInCents - Amount to add in cents
+ * @returns {Promise<Object>} Updated subscription
+ */
+const addCredits = async (userId, amountInCents) => {
+  const subscription = await getPlatformSubscription();
+  if (!subscription) {
+    throw new Error('No active platform subscription found');
+  }
+
+  const currentBalance = subscription.credit_balance || 0;
+  const newBalance = currentBalance + amountInCents;
+
+  const updated = await updatePlatformSubscription({
+    creditBalance: newBalance
+  });
+
+  console.log('[SubscriptionLimits] Added credits:', {
+    amountInCents,
+    newBalance: updated.credit_balance
+  });
+
+  return updated;
+};
+
+/**
+ * Deduct credits from platform subscription (for PAYG model)
+ * @param {string} userId - User ID (not used)
+ * @param {number} amountInCents - Amount to deduct in cents
+ * @returns {Promise<Object>} Updated subscription
+ */
+const deductCredits = async (userId, amountInCents) => {
+  const subscription = await getPlatformSubscription();
+  if (!subscription) {
+    throw new Error('No active platform subscription found');
+  }
+
+  const currentBalance = subscription.credit_balance || 0;
+
+  if (currentBalance < amountInCents) {
+    throw new Error(`Insufficient credits. Current: ${currentBalance}, Required: ${amountInCents}`);
+  }
+
+  const newBalance = currentBalance - amountInCents;
+
+  const updated = await updatePlatformSubscription({
+    creditBalance: newBalance
+  });
+
+  console.log('[SubscriptionLimits] Deducted credits:', {
+    amountInCents,
+    newBalance: updated.credit_balance
+  });
+
+  return updated;
+};
+
+// ============================================================================
+// CREDIT OPERATION FUNCTIONS
+// ============================================================================
 
 /**
  * Get credit cost for an operation based on subscription tier
@@ -582,14 +757,14 @@ const getCreditCost = (operation, tier) => {
 };
 
 /**
- * Check if user has sufficient credits for an operation (PAYG model only)
- * @param {string} userId - User ID
+ * Check if platform has sufficient credits for an operation (PAYG model only)
+ * @param {string} userId - User ID (not used)
  * @param {string} operation - Operation type ('kyc_session' or 'document_signing')
  * @returns {Promise<Object>} { allowed: boolean, cost: number, balance: number, reason?: string }
  */
 const checkCreditsForOperation = async (userId, operation) => {
   try {
-    const subscription = await getUserSubscription(userId);
+    const subscription = await getSubscription();
 
     // Only PAYG model uses credits
     if (subscription.model !== 'payg') {
@@ -625,8 +800,7 @@ const checkCreditsForOperation = async (userId, operation) => {
 
 /**
  * Deduct credits for an operation (PAYG model only)
- * Validates sufficient balance before deducting
- * @param {string} userId - User ID
+ * @param {string} userId - User ID (not used)
  * @param {string} operation - Operation type ('kyc_session' or 'document_signing')
  * @returns {Promise<Object>} { success: boolean, cost: number, newBalance: number, reason?: string }
  */
@@ -654,14 +828,14 @@ const deductCreditsForOperation = async (userId, operation) => {
     }
 
     // Deduct the credits
-    const updatedUser = await deductCredits(userId, check.cost);
+    const updated = await deductCredits(userId, check.cost);
 
-    console.log(`[SubscriptionLimits] Deducted ${check.cost} cents for ${operation}. New balance: ${updatedUser.credit_balance}`);
+    console.log(`[SubscriptionLimits] Deducted ${check.cost} cents for ${operation}. New balance: ${updated.credit_balance}`);
 
     return {
       success: true,
       cost: check.cost,
-      newBalance: updatedUser.credit_balance,
+      newBalance: updated.credit_balance,
       model: check.model,
       tier: check.tier
     };
@@ -671,89 +845,34 @@ const deductCreditsForOperation = async (userId, operation) => {
   }
 };
 
+// ============================================================================
+// BACKWARD COMPATIBILITY (deprecated, use getSubscription instead)
+// ============================================================================
+
 /**
- * Add credits to user's balance (for PAYG model)
- * @param {string} userId - User ID
- * @param {number} amountInCents - Amount to add in cents
- * @returns {Promise<Object>} Updated user
+ * @deprecated Use getSubscription() instead
  */
-const addCredits = async (userId, amountInCents) => {
-  const supabase = getSupabase();
-
-  // First get current balance
-  const { data: user, error: fetchError } = await supabase
-    .from('users')
-    .select('credit_balance')
-    .eq('id', userId)
-    .single();
-
-  if (fetchError) {
-    throw fetchError;
-  }
-
-  const currentBalance = user.credit_balance || 0;
-  const newBalance = currentBalance + amountInCents;
-
-  const { data, error } = await supabase
-    .from('users')
-    .update({ credit_balance: newBalance })
-    .eq('id', userId)
-    .select()
-    .single();
-
-  if (error) {
-    console.error('[SubscriptionLimits] Error adding credits:', error);
-    throw error;
-  }
-
-  console.log('[SubscriptionLimits] Added credits:', { userId, amountInCents, newBalance: data.credit_balance });
-
-  return data;
+const findSubscriptionOwner = async () => {
+  console.warn('[SubscriptionLimits] findSubscriptionOwner is deprecated, use getPlatformSubscription instead');
+  return getPlatformSubscription();
 };
 
 /**
- * Deduct credits from user's balance (for PAYG model)
- * @param {string} userId - User ID
- * @param {number} amountInCents - Amount to deduct in cents
- * @returns {Promise<Object>} Updated user with new balance
+ * @deprecated Use upsertPlatformSubscription() instead
  */
-const deductCredits = async (userId, amountInCents) => {
-  const supabase = getSupabase();
+const updateUserSubscription = async (userId, model, tier) => {
+  console.warn('[SubscriptionLimits] updateUserSubscription is deprecated');
+  const defaults = getDefaultLimits(model, tier);
 
-  // First get current balance
-  const { data: user, error: fetchError } = await supabase
-    .from('users')
-    .select('credit_balance')
-    .eq('id', userId)
-    .single();
-
-  if (fetchError) {
-    throw fetchError;
-  }
-
-  const currentBalance = user.credit_balance || 0;
-
-  if (currentBalance < amountInCents) {
-    throw new Error(`Insufficient credits. Current: ${currentBalance}, Required: ${amountInCents}`);
-  }
-
-  const newBalance = currentBalance - amountInCents;
-
-  const { data, error } = await supabase
-    .from('users')
-    .update({ credit_balance: newBalance })
-    .eq('id', userId)
-    .select()
-    .single();
-
-  if (error) {
-    console.error('[SubscriptionLimits] Error deducting credits:', error);
-    throw error;
-  }
-
-  console.log('[SubscriptionLimits] Deducted credits:', { userId, amountInCents, newBalance: data.credit_balance });
-
-  return data;
+  return upsertPlatformSubscription({
+    subscriptionModel: model,
+    subscriptionTier: tier,
+    maxTotalCommitment: defaults.maxTotalCommitment,
+    maxInvestors: defaults.maxInvestors,
+    extraCommitmentPurchased: 0,
+    extraInvestorsPurchased: 0,
+    managedByUserId: userId
+  });
 };
 
 // ============================================================================
@@ -772,10 +891,20 @@ module.exports = {
   formatCurrency,
   getCreditCost,
 
+  // Platform subscription functions (NEW)
+  getPlatformSubscription,
+  getSubscription,
+  upsertPlatformSubscription,
+  updatePlatformSubscription,
+
   // Database queries
   countInvestors,
   calculateTotalCommitment,
+
+  // Backward compatibility (delegates to platform subscription)
   getUserSubscription,
+  findSubscriptionOwner,
+  updateUserSubscription,
 
   // Validation functions
   validateStructureCreation,
@@ -784,7 +913,6 @@ module.exports = {
 
   // Usage and updates
   getSubscriptionUsage,
-  updateUserSubscription,
   addExtraInvestors,
   addExtraCommitment,
 

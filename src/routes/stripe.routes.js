@@ -317,7 +317,7 @@ router.post('/remove-service', authenticate, catchAsync(async (req, res) => {
 
 /**
  * @route   GET /api/stripe/subscription
- * @desc    Get current subscription details
+ * @desc    Get current subscription details (from platform_subscription table)
  * @access  Private
  */
 router.get('/subscription', authenticate, catchAsync(async (req, res) => {
@@ -330,7 +330,10 @@ router.get('/subscription', authenticate, catchAsync(async (req, res) => {
     });
   }
 
-  if (!user.stripeSubscriptionId) {
+  // Get platform subscription (single subscription for entire platform)
+  const platformSub = await getPlatformSubscription();
+
+  if (!platformSub || !platformSub.stripe_subscription_id) {
     return res.json({
       success: true,
       subscription: null,
@@ -338,18 +341,25 @@ router.get('/subscription', authenticate, catchAsync(async (req, res) => {
     });
   }
 
-  const subscription = await stripeService.getSubscription(user.stripeSubscriptionId);
+  // Check if current user is the manager of the subscription
+  const isOwner = platformSub.managed_by_user_id === req.user.id;
+
+  console.log(`[Stripe] Getting platform subscription for user ${req.user.id}, isOwner: ${isOwner}`);
+
+  const subscription = await stripeService.getSubscription(platformSub.stripe_subscription_id);
 
   res.json({
     success: true,
-    subscription: subscription
+    subscription: subscription,
+    subscriptionOwnerId: platformSub.managed_by_user_id,
+    isOwner: isOwner
   });
 }));
 
 /**
  * @route   POST /api/stripe/cancel-subscription
- * @desc    Cancel subscription (at period end or immediately)
- * @access  Private
+ * @desc    Cancel subscription (at period end or immediately) - only subscription manager can cancel
+ * @access  Private (admin/root only)
  * @body    { immediately: false }
  *
  * Note: 12-month minimum commitment is enforced. Users cannot cancel
@@ -357,7 +367,7 @@ router.get('/subscription', authenticate, catchAsync(async (req, res) => {
  */
 router.post('/cancel-subscription', authenticate, catchAsync(async (req, res) => {
   const { immediately = false } = req.body;
-  const supabase = require('../config/database').getSupabase();
+  const { updatePlatformSubscription } = require('../services/subscriptionLimits.service');
   const user = await User.findById(req.user.id);
 
   if (!user) {
@@ -367,29 +377,27 @@ router.post('/cancel-subscription', authenticate, catchAsync(async (req, res) =>
     });
   }
 
-  if (!user.stripeSubscriptionId) {
+  // Get platform subscription
+  const platformSub = await getPlatformSubscription();
+
+  if (!platformSub || !platformSub.stripe_subscription_id) {
     return res.status(400).json({
       success: false,
       message: 'No active subscription found'
     });
   }
 
-  // Check 12-month minimum commitment
-  const { data: userData, error: userDataError } = await supabase
-    .from('users')
-    .select('subscription_start_date')
-    .eq('id', req.user.id)
-    .single();
+  // Only the subscription manager can cancel
+  if (platformSub.managed_by_user_id !== req.user.id) {
+    return res.status(403).json({
+      success: false,
+      message: 'Only the subscription manager can cancel the subscription'
+    });
+  }
 
-  console.log('[Stripe Cancel] Checking commitment:', {
-    userId: req.user.id,
-    userData,
-    userDataError,
-    subscription_start_date: userData?.subscription_start_date
-  });
-
-  if (userData?.subscription_start_date) {
-    const startDate = new Date(userData.subscription_start_date);
+  // Check 12-month minimum commitment from platform_subscription
+  if (platformSub.subscription_start_date) {
+    const startDate = new Date(platformSub.subscription_start_date);
     const now = new Date();
     const monthsElapsed = (now.getFullYear() - startDate.getFullYear()) * 12 +
                           (now.getMonth() - startDate.getMonth());
@@ -425,13 +433,13 @@ router.post('/cancel-subscription', authenticate, catchAsync(async (req, res) =>
   }
 
   const subscription = await stripeService.cancelSubscription(
-    user.stripeSubscriptionId,
+    platformSub.stripe_subscription_id,
     immediately
   );
 
-  // Update user subscription status
+  // Update platform subscription status
   const newStatus = immediately ? 'canceled' : 'canceling';
-  await User.findByIdAndUpdate(user.id, {
+  await updatePlatformSubscription({
     subscriptionStatus: newStatus
   });
 
@@ -446,19 +454,14 @@ router.post('/cancel-subscription', authenticate, catchAsync(async (req, res) =>
 
 /**
  * @route   GET /api/stripe/commitment-status
- * @desc    Get subscription commitment status (12-month minimum)
+ * @desc    Get subscription commitment status (12-month minimum) from platform_subscription
  * @access  Private
  */
 router.get('/commitment-status', authenticate, catchAsync(async (req, res) => {
-  const supabase = require('../config/database').getSupabase();
+  // Get platform subscription commitment status
+  const platformSub = await getPlatformSubscription();
 
-  const { data: userData } = await supabase
-    .from('users')
-    .select('subscription_start_date, subscription_status')
-    .eq('id', req.user.id)
-    .single();
-
-  if (!userData?.subscription_start_date) {
+  if (!platformSub?.subscription_start_date) {
     return res.json({
       success: true,
       canCancel: true,
@@ -467,7 +470,7 @@ router.get('/commitment-status', authenticate, catchAsync(async (req, res) => {
     });
   }
 
-  const startDate = new Date(userData.subscription_start_date);
+  const startDate = new Date(platformSub.subscription_start_date);
   const now = new Date();
   const monthsElapsed = (now.getFullYear() - startDate.getFullYear()) * 12 +
                         (now.getMonth() - startDate.getMonth());
@@ -487,6 +490,7 @@ router.get('/commitment-status', authenticate, catchAsync(async (req, res) => {
     monthsElapsed,
     remainingMonths,
     canCancelDate: canCancelDate.toISOString(),
+    subscriptionId: platformSub.id,
     message: canCancel
       ? 'Commitment period completed. You can cancel anytime.'
       : `${remainingMonths} month(s) remaining in your 12-month commitment.`
@@ -495,10 +499,11 @@ router.get('/commitment-status', authenticate, catchAsync(async (req, res) => {
 
 /**
  * @route   POST /api/stripe/reactivate-subscription
- * @desc    Reactivate a subscription scheduled for cancellation
- * @access  Private
+ * @desc    Reactivate a subscription scheduled for cancellation - only subscription manager can reactivate
+ * @access  Private (admin/root only)
  */
 router.post('/reactivate-subscription', authenticate, catchAsync(async (req, res) => {
+  const { updatePlatformSubscription } = require('../services/subscriptionLimits.service');
   const user = await User.findById(req.user.id);
 
   if (!user) {
@@ -508,16 +513,28 @@ router.post('/reactivate-subscription', authenticate, catchAsync(async (req, res
     });
   }
 
-  if (!user.stripeSubscriptionId) {
+  // Get platform subscription
+  const platformSub = await getPlatformSubscription();
+
+  if (!platformSub || !platformSub.stripe_subscription_id) {
     return res.status(400).json({
       success: false,
       message: 'No subscription found'
     });
   }
 
-  const subscription = await stripeService.reactivateSubscription(user.stripeSubscriptionId);
+  // Only the subscription manager can reactivate
+  if (platformSub.managed_by_user_id !== req.user.id) {
+    return res.status(403).json({
+      success: false,
+      message: 'Only the subscription manager can reactivate the subscription'
+    });
+  }
 
-  await User.findByIdAndUpdate(user.id, {
+  const subscription = await stripeService.reactivateSubscription(platformSub.stripe_subscription_id);
+
+  // Update platform subscription status
+  await updatePlatformSubscription({
     subscriptionStatus: subscription.status
   });
 
@@ -530,21 +547,17 @@ router.post('/reactivate-subscription', authenticate, catchAsync(async (req, res
 
 /**
  * @route   GET /api/stripe/invoices
- * @desc    Get customer invoices
+ * @desc    Get customer invoices (from platform_subscription)
  * @access  Private
  */
 router.get('/invoices', authenticate, catchAsync(async (req, res) => {
   const { limit = 10 } = req.query;
-  const user = await User.findById(req.user.id);
 
-  if (!user) {
-    return res.status(404).json({
-      success: false,
-      message: 'User not found'
-    });
-  }
+  // Get platform subscription's customer ID
+  const platformSub = await getPlatformSubscription();
+  const customerId = platformSub?.stripe_customer_id;
 
-  if (!user.stripeCustomerId) {
+  if (!customerId) {
     return res.json({
       success: true,
       invoices: [],
@@ -553,7 +566,7 @@ router.get('/invoices', authenticate, catchAsync(async (req, res) => {
   }
 
   const invoices = await stripeService.getCustomerInvoices(
-    user.stripeCustomerId,
+    customerId,
     parseInt(limit)
   );
 
@@ -566,27 +579,22 @@ router.get('/invoices', authenticate, catchAsync(async (req, res) => {
 
 /**
  * @route   GET /api/stripe/upcoming-invoice
- * @desc    Get preview of next invoice
+ * @desc    Get preview of next invoice (from platform_subscription)
  * @access  Private
  */
 router.get('/upcoming-invoice', authenticate, catchAsync(async (req, res) => {
-  const user = await User.findById(req.user.id);
+  // Get platform subscription's customer ID
+  const platformSub = await getPlatformSubscription();
+  const customerId = platformSub?.stripe_customer_id;
 
-  if (!user) {
-    return res.status(404).json({
-      success: false,
-      message: 'User not found'
-    });
-  }
-
-  if (!user.stripeCustomerId) {
+  if (!customerId) {
     return res.json({
       success: true,
       upcomingInvoice: null
     });
   }
 
-  const upcomingInvoice = await stripeService.getUpcomingInvoice(user.stripeCustomerId);
+  const upcomingInvoice = await stripeService.getUpcomingInvoice(customerId);
 
   res.json({
     success: true,
@@ -626,27 +634,22 @@ router.post('/create-setup-intent', authenticate, catchAsync(async (req, res) =>
 
 /**
  * @route   GET /api/stripe/payment-methods
- * @desc    Get saved payment methods
+ * @desc    Get saved payment methods (from platform_subscription)
  * @access  Private
  */
 router.get('/payment-methods', authenticate, catchAsync(async (req, res) => {
-  const user = await User.findById(req.user.id);
+  // Get platform subscription's customer ID
+  const platformSub = await getPlatformSubscription();
+  const customerId = platformSub?.stripe_customer_id;
 
-  if (!user) {
-    return res.status(404).json({
-      success: false,
-      message: 'User not found'
-    });
-  }
-
-  if (!user.stripeCustomerId) {
+  if (!customerId) {
     return res.json({
       success: true,
       paymentMethods: []
     });
   }
 
-  const paymentMethods = await stripeService.getPaymentMethods(user.stripeCustomerId);
+  const paymentMethods = await stripeService.getPaymentMethods(customerId);
 
   res.json({
     success: true,
@@ -693,94 +696,78 @@ router.post(
             metadata: subscription.metadata
           });
 
-          // Build update object
-          const updateData = {
+          // Get subscription model and tier from metadata
+          const subModel = subscription.metadata?.subscriptionModel || 'tier_based';
+          const subTier = subscription.metadata?.planTier || 'starter';
+          const defaultLimits = getDefaultLimits(subModel, subTier);
+
+          // Build platform subscription data
+          const platformSubData = {
             stripeSubscriptionId: subscription.id,
+            stripeCustomerId: subscription.customer,
             subscriptionStatus: subscription.status,
-            stripeCustomerId: subscription.customer // Also save the customer ID
+            subscriptionModel: subModel,
+            subscriptionTier: subTier
           };
 
           // Set subscription_start_date only on creation (12-month minimum commitment)
           if (event.type === 'customer.subscription.created') {
-            // Use Stripe's subscription start_date or current period start
             const startTimestamp = subscription.start_date || subscription.current_period_start;
-            updateData.subscriptionStartDate = new Date(startTimestamp * 1000).toISOString();
-            console.log(`[Stripe Webhook] Setting subscription start date: ${updateData.subscriptionStartDate}`);
-
-            // Get subscription model and tier from metadata
-            const subModel = subscription.metadata?.subscriptionModel || 'tier_based';
-            const subTier = subscription.metadata?.planTier || 'starter';
-
-            updateData.subscriptionModel = subModel;
-            updateData.subscriptionTier = subTier;
-            console.log(`[Stripe Webhook] Setting subscription model: ${subModel}, tier: ${subTier}`);
-
-            // Import limits service to get default limits for the tier
-            const { getDefaultLimits } = require('../services/subscriptionLimits.service');
-            const defaultLimits = getDefaultLimits(subModel, subTier);
+            platformSubData.subscriptionStartDate = new Date(startTimestamp * 1000).toISOString();
+            console.log(`[Stripe Webhook] Setting subscription start date: ${platformSubData.subscriptionStartDate}`);
 
             // Set subscription limits based on tier
-            updateData.maxInvestors = defaultLimits.maxInvestors;
-            updateData.maxTotalCommitment = defaultLimits.maxTotalCommitment;
+            platformSubData.maxInvestors = defaultLimits.maxInvestors;
+            platformSubData.maxTotalCommitment = defaultLimits.maxTotalCommitment;
             console.log(`[Stripe Webhook] Setting limits: maxInvestors=${defaultLimits.maxInvestors}, maxTotalCommitment=${defaultLimits.maxTotalCommitment}`);
 
             // Reset extra purchases for new subscription
-            updateData.extraInvestorsPurchased = 0;
-            updateData.extraCommitmentPurchased = 0;
+            platformSubData.extraInvestorsPurchased = 0;
+            platformSubData.extraCommitmentPurchased = 0;
 
             // Set emissions from metadata
             const emissionsAvailable = parseInt(subscription.metadata?.emissionsAvailable || '5');
-            updateData.emissionsAvailable = emissionsAvailable;
-            updateData.emissionsUsed = 0;
+            platformSubData.emissionsAvailable = emissionsAvailable;
+            platformSubData.emissionsUsed = 0;
             console.log(`[Stripe Webhook] Setting emissions: available=${emissionsAvailable}, used=0`);
 
             // For PAYG model, initialize credit balance if provided in metadata
             if (subModel === 'payg') {
               const initialCredits = parseInt(subscription.metadata?.initialCredits || '0');
               if (initialCredits > 0) {
-                updateData.creditBalance = initialCredits;
+                platformSubData.creditBalance = initialCredits;
                 console.log(`[Stripe Webhook] Setting initial credit balance: ${initialCredits}`);
               }
             }
-          }
 
-          console.log(`[Stripe Webhook] Update data to save:`, JSON.stringify(updateData, null, 2));
-
-          // Try to find user by stripeCustomerId first
-          let updatedUser = await User.findOneAndUpdate(
-            { stripeCustomerId: subscription.customer },
-            updateData
-          );
-
-          // If not found, try to find by userId from metadata
-          if (!updatedUser && subscription.metadata?.userId) {
-            console.log(`[Stripe Webhook] User not found by customerId, trying userId: ${subscription.metadata.userId}`);
-            updatedUser = await User.findByIdAndUpdate(
-              subscription.metadata.userId,
-              updateData
-            );
-          }
-
-          // If still not found, try to find by email from Stripe customer
-          if (!updatedUser) {
-            try {
-              const stripeCustomer = await stripe.customers.retrieve(subscription.customer);
-              if (stripeCustomer && !stripeCustomer.deleted && stripeCustomer.email) {
-                console.log(`[Stripe Webhook] Trying to find user by email: ${stripeCustomer.email}`);
-                updatedUser = await User.findOneAndUpdate(
-                  { email: stripeCustomer.email.toLowerCase() },
-                  updateData
-                );
+            // Set managed_by_user_id from metadata or find user
+            let managedByUserId = subscription.metadata?.userId;
+            if (!managedByUserId) {
+              // Try to find user by stripeCustomerId or email
+              let user = await User.findOne({ stripeCustomerId: subscription.customer });
+              if (!user) {
+                try {
+                  const stripeCustomer = await stripe.customers.retrieve(subscription.customer);
+                  if (stripeCustomer && !stripeCustomer.deleted && stripeCustomer.email) {
+                    user = await User.findOne({ email: stripeCustomer.email.toLowerCase() });
+                  }
+                } catch (customerErr) {
+                  console.error(`[Stripe Webhook] Error fetching customer:`, customerErr);
+                }
               }
-            } catch (customerErr) {
-              console.error(`[Stripe Webhook] Error fetching customer:`, customerErr);
+              managedByUserId = user?.id;
             }
+            platformSubData.managedByUserId = managedByUserId;
           }
 
-          if (updatedUser) {
-            console.log(`[Stripe Webhook] Updated user ${updatedUser.id} subscription status to ${subscription.status}`);
-          } else {
-            console.warn(`[Stripe Webhook] No user found with customer ID: ${subscription.customer} or metadata userId: ${subscription.metadata?.userId}`);
+          console.log(`[Stripe Webhook] Platform subscription data to save:`, JSON.stringify(platformSubData, null, 2));
+
+          // Create or update platform subscription
+          try {
+            const updatedSub = await upsertPlatformSubscription(platformSubData);
+            console.log(`[Stripe Webhook] Platform subscription upserted: ${updatedSub.id}, status: ${subscription.status}`);
+          } catch (upsertError) {
+            console.error(`[Stripe Webhook] Error upserting platform subscription:`, upsertError);
           }
           break;
 
@@ -788,15 +775,15 @@ router.post(
           const deletedSub = event.data.object;
           console.log(`[Stripe Webhook] Subscription deleted: ${deletedSub.id}`);
 
-          const deletedUser = await User.findOneAndUpdate(
-            { stripeCustomerId: deletedSub.customer },
-            {
+          // Update platform subscription status to canceled
+          try {
+            const { updatePlatformSubscription } = require('../services/subscriptionLimits.service');
+            await updatePlatformSubscription({
               subscriptionStatus: 'canceled'
-            }
-          );
-
-          if (deletedUser) {
-            console.log(`[Stripe Webhook] Updated user ${deletedUser.id} subscription status to canceled`);
+            });
+            console.log(`[Stripe Webhook] Platform subscription status updated to canceled`);
+          } catch (cancelError) {
+            console.error(`[Stripe Webhook] Error updating platform subscription status:`, cancelError);
           }
           break;
 
@@ -1546,7 +1533,18 @@ router.get('/webhook-connect/health', (req, res) => {
 // SUBSCRIPTION LIMITS ENDPOINTS
 // ==========================================
 
-const { getSubscriptionUsage, updateUserSubscription, validateStructureCreation, validateInvestorCreation, addExtraInvestors, addExtraCommitment, addCredits } = require('../services/subscriptionLimits.service');
+const {
+  getSubscriptionUsage,
+  updateUserSubscription,
+  validateStructureCreation,
+  validateInvestorCreation,
+  addExtraInvestors,
+  addExtraCommitment,
+  addCredits,
+  getPlatformSubscription,
+  upsertPlatformSubscription,
+  getDefaultLimits
+} = require('../services/subscriptionLimits.service');
 
 /**
  * @route   GET /api/stripe/subscription-usage

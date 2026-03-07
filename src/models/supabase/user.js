@@ -871,13 +871,10 @@ class User {
       w9Form: dbUser.w9_form,
       // MFA
       mfaFactorId: dbUser.mfa_factor_id,
-      // Stripe subscription fields
+      // Stripe fields (subscription data now in platform_subscription table)
       stripeCustomerId: dbUser.stripe_customer_id,
       stripeSubscriptionId: dbUser.stripe_subscription_id,
       subscriptionStatus: dbUser.subscription_status,
-      subscriptionStartDate: dbUser.subscription_start_date,
-      subscriptionModel: dbUser.subscription_model, // 'tier_based' or 'payg'
-      subscriptionTier: dbUser.subscription_tier, // 'starter', 'professional', 'growth', 'enterprise'
       // Stripe Connect fields (for investors)
       stripeAccountId: dbUser.stripe_account_id,
       stripeOnboardingComplete: dbUser.stripe_onboarding_complete,
@@ -969,23 +966,10 @@ class User {
       w9Form: 'w9_form',
       // MFA
       mfaFactorId: 'mfa_factor_id',
-      // Stripe subscription fields
+      // Stripe fields (subscription data now in platform_subscription table)
       stripeCustomerId: 'stripe_customer_id',
       stripeSubscriptionId: 'stripe_subscription_id',
       subscriptionStatus: 'subscription_status',
-      subscriptionModel: 'subscription_model',
-      subscriptionTier: 'subscription_tier',
-      subscriptionStartDate: 'subscription_start_date',
-      // Subscription limits
-      maxInvestors: 'max_investors',
-      maxTotalCommitment: 'max_total_commitment',
-      extraInvestorsPurchased: 'extra_investors_purchased',
-      extraCommitmentPurchased: 'extra_commitment_purchased',
-      // Emissions tracking
-      emissionsAvailable: 'emissions_available',
-      emissionsUsed: 'emissions_used',
-      // Credit balance (PAYG model)
-      creditBalance: 'credit_balance',
       // Stripe Connect fields (for investors)
       stripeAccountId: 'stripe_account_id',
       stripeOnboardingComplete: 'stripe_onboarding_complete',
