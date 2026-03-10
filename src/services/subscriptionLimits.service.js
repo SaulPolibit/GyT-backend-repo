@@ -175,6 +175,14 @@ const getPlatformSubscription = async () => {
 const getSubscription = async () => {
   const subscription = await getPlatformSubscription();
 
+  console.log('[SubscriptionLimits] Raw platform subscription:', subscription ? {
+    id: subscription.id,
+    subscription_model: subscription.subscription_model,
+    subscription_tier: subscription.subscription_tier,
+    subscription_status: subscription.subscription_status,
+    credit_balance: subscription.credit_balance
+  } : null);
+
   if (!subscription) {
     console.log('[SubscriptionLimits] No active platform subscription found');
     return {
