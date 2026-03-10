@@ -14,46 +14,51 @@ const {
 } = require('../middleware/errorHandler');
 const { User, DocusealSubmission, Payment } = require('../models/supabase');
 const { checkCreditsForOperation, deductCreditsForOperation } = require('../services/subscriptionLimits.service');
+const { getSupabase } = require('../config/database');
 
 const router = express.Router();
 
 /**
- * Find the subscription owner (admin) for credit operations
+ * Find the subscription owner for credit operations (platform subscription)
  */
 const findSubscriptionOwnerForDocuSeal = async () => {
-  const supabase = require('../config/database').getSupabase();
+  const supabase = getSupabase();
 
-  // Find the admin with a subscription (use maybeSingle to handle 0 results gracefully)
-  const { data: admin, error } = await supabase
-    .from('users')
-    .select('id, role, subscription_model, subscription_tier')
-    .in('role', [0, 1, 2])
-    .not('subscription_model', 'is', null)
+  // Get the active platform subscription
+  const { data: subscription, error } = await supabase
+    .from('platform_subscription')
+    .select('id, managed_by_user_id, subscription_model, subscription_tier')
+    .in('subscription_status', ['active', 'trialing'])
     .limit(1)
     .maybeSingle();
 
   if (error) {
-    console.error('[findSubscriptionOwnerForDocuSeal] Error finding admin:', error);
+    console.error('[findSubscriptionOwnerForDocuSeal] Error:', error);
     return null;
   }
 
-  console.log('[findSubscriptionOwnerForDocuSeal] Found admin:', admin);
-  return admin;
+  if (!subscription) {
+    console.log('[findSubscriptionOwnerForDocuSeal] No active platform subscription found');
+    return null;
+  }
+
+  return {
+    id: subscription.managed_by_user_id || 'platform',
+    subscriptionModel: subscription.subscription_model,
+    subscriptionTier: subscription.subscription_tier
+  };
 };
 
 /**
  * @route   GET /api/docuseal/check-signing-credits
  * @desc    Check if there are enough credits for document signing (PAYG model)
  * @access  Private (requires authentication)
- * @returns {object} { allowed: boolean, cost: number, balance: number, ... }
  */
 router.get('/check-signing-credits', authenticate, catchAsync(async (req, res) => {
   try {
-    // Find the subscription owner (admin)
     const subscriptionOwner = await findSubscriptionOwnerForDocuSeal();
 
     if (!subscriptionOwner) {
-      // No subscription owner found - allow operation (no PAYG restrictions)
       return res.status(200).json({
         success: true,
         allowed: true,
@@ -64,7 +69,6 @@ router.get('/check-signing-credits', authenticate, catchAsync(async (req, res) =
       });
     }
 
-    // Check credits for document signing
     const creditCheck = await checkCreditsForOperation(subscriptionOwner.id, 'document_signing');
 
     if (!creditCheck.allowed) {
@@ -105,15 +109,12 @@ router.get('/check-signing-credits', authenticate, catchAsync(async (req, res) =
  * @route   POST /api/docuseal/deduct-signing-credits
  * @desc    Deduct credits for document signing (called when user starts signing)
  * @access  Private (requires authentication)
- * @returns {object} { success: boolean, cost: number, newBalance: number, ... }
  */
 router.post('/deduct-signing-credits', authenticate, catchAsync(async (req, res) => {
   try {
-    // Find the subscription owner (admin)
     const subscriptionOwner = await findSubscriptionOwnerForDocuSeal();
 
     if (!subscriptionOwner) {
-      // No subscription owner found - allow operation (no PAYG restrictions)
       return res.status(200).json({
         success: true,
         deducted: false,
@@ -124,7 +125,6 @@ router.post('/deduct-signing-credits', authenticate, catchAsync(async (req, res)
       });
     }
 
-    // Check if there are enough credits first
     const creditCheck = await checkCreditsForOperation(subscriptionOwner.id, 'document_signing');
 
     if (!creditCheck.allowed) {
@@ -139,7 +139,6 @@ router.post('/deduct-signing-credits', authenticate, catchAsync(async (req, res)
       });
     }
 
-    // Deduct credits
     const deductResult = await deductCreditsForOperation(subscriptionOwner.id, 'document_signing');
 
     if (deductResult.success) {
@@ -591,27 +590,23 @@ router.get('/submissions/stats', authenticate, catchAsync(async (req, res) => {
  * @body    Webhook payload from DocuSeal
  */
 router.post('/webhook', catchAsync(async (req, res) => {
-  // Log incoming webhook request for debugging
-  console.log('[DocuSeal Webhook] Received webhook request');
-  console.log('[DocuSeal Webhook] Headers:', JSON.stringify(req.headers, null, 2));
-  console.log('[DocuSeal Webhook] Body:', JSON.stringify(req.body, null, 2));
-
   // Validate X-PoliBit-Signature header
   const signature = req.headers['x-polibit-signature'];
-  const expectedSignature = '2900f56566097c95876078f8ebed731a374a888d7f5a5a518e2e5d9f518775d8';
+  const expectedSignature = process.env.DOCUSEAL_WEBHOOK_SIGNATURE;
 
-  console.log('[DocuSeal Webhook] Signature validation:', {
-    received: signature,
-    expected: expectedSignature,
-    isValid: signature === expectedSignature
-  });
+  if (!expectedSignature) {
+    console.error('[DocuSeal Webhook] DOCUSEAL_WEBHOOK_SIGNATURE not configured');
+    return res.status(500).json({ success: false, message: 'Webhook configuration error' });
+  }
 
-  if (signature !== expectedSignature) {
-    console.log('[DocuSeal Webhook] Invalid signature - rejecting request');
+  const isValidSignature = signature && expectedSignature &&
+    signature.length === expectedSignature.length &&
+    require('crypto').timingSafeEqual(Buffer.from(signature), Buffer.from(expectedSignature));
+
+  if (!isValidSignature) {
     return res.status(401).json({
       success: false,
-      message: 'Invalid signature',
-      signature: signature
+      message: 'Invalid signature'
     });
   }
 
@@ -633,82 +628,15 @@ router.post('/webhook', catchAsync(async (req, res) => {
     const auditLogUrl = data.audit_log_url;
     const status = data.status || 'created';
 
-    // Get email from submitters array
+    // Get email from first submitter
     const submitters = data.submitters || [];
-    console.log('[DocuSeal Webhook] ===== SUBMISSION CREATED DEBUG =====');
-    console.log('[DocuSeal Webhook] All submitters:', JSON.stringify(submitters, null, 2));
-    console.log('[DocuSeal Webhook] Full data object:', JSON.stringify(data, null, 2));
-    console.log('[DocuSeal Webhook] External ID:', data.external_id);
-
-    let email = null;
-    let userId = null;
-
-    // Strategy 1: Use external_id to find the user directly (most reliable)
-    if (data.external_id && data.external_id.startsWith('user_')) {
-      const extractedUserId = data.external_id.replace('user_', '');
-      console.log('[DocuSeal Webhook] Found external_id, extracting user ID:', extractedUserId);
-
-      try {
-        const user = await User.findById(extractedUserId);
-        if (user) {
-          email = user.email;
-          userId = user.id;
-          console.log('[DocuSeal Webhook] ✅ Found user by external_id:', { userId: user.id, email: user.email });
-        } else {
-          console.log('[DocuSeal Webhook] ⚠️ User not found with ID:', extractedUserId);
-        }
-      } catch (error) {
-        console.log('[DocuSeal Webhook] ⚠️ Error finding user by external_id:', error.message);
-      }
-    }
-
-    // Strategy 2: If external_id didn't work, try finding submitter by role
-    if (!email && submitters.length > 0) {
-      const clientSubmitter = submitters.find(s =>
-        s.name && (
-          s.name.toLowerCase() === 'client' ||
-          s.name.toLowerCase() === 'customer' ||
-          s.name.toLowerCase() === 'investor'
-        )
-      );
-
-      if (clientSubmitter && clientSubmitter.email) {
-        email = clientSubmitter.email;
-        console.log('[DocuSeal Webhook] Found client submitter by role name:', {
-          name: clientSubmitter.name,
-          email: clientSubmitter.email
-        });
-      }
-    }
-
-    // Strategy 3: Check if data has an email field directly
-    if (!email && data.email) {
-      email = data.email;
-      console.log('[DocuSeal Webhook] Found email in data.email:', email);
-    }
-
-    // Strategy 4: Use first submitter with an email (least reliable)
-    if (!email && submitters.length > 0) {
-      const firstWithEmail = submitters.find(s => s.email);
-      email = firstWithEmail ? firstWithEmail.email : null;
-      console.log('[DocuSeal Webhook] ⚠️ Using first submitter with email (fallback):', email);
-
-      // Log submitter structure for debugging
-      if (submitters.length > 0) {
-        console.log('[DocuSeal Webhook] First submitter structure:', submitters[0]);
-      }
-    }
-
-    console.log('[DocuSeal Webhook] ===== FINAL RESULT =====');
-    console.log('[DocuSeal Webhook] Extracted email:', email);
-    console.log('[DocuSeal Webhook] Extracted userId:', userId);
+    const email = submitters.length > 0 ? submitters[0].email : null;
 
     // Construct submission URL from slug
     const submissionURL = `https://docuseal.com/s/${slug}`;
 
     console.log('[DocuSeal Webhook] Extracted data:', {
       submissionId,
-      email,
       slug,
       submissionURL,
       auditLogUrl,
@@ -724,28 +652,15 @@ router.post('/webhook', catchAsync(async (req, res) => {
       });
     }
 
-    console.log('[DocuSeal Webhook] Creating new submission:', { email, submissionId, submissionURL, auditLogUrl, status, userId });
+    console.log('[DocuSeal Webhook] Creating new submission:', { submissionId, submissionURL, auditLogUrl, status });
 
-    // If we don't have userId yet, try to find user by email
-    if (!userId && email) {
-      const user = await User.findByEmail(email);
-      userId = user ? user.id : null;
-
-      if (!user) {
-        console.log('[DocuSeal Webhook] ⚠️ Warning: No user found for email:', email);
-      } else {
-        console.log('[DocuSeal Webhook] Found user by email:', { id: user.id, email: user.email });
-      }
-    }
-
-    // Create new submission record with user_id
+    // Create new submission record
     const newSubmission = await DocusealSubmission.create({
       email,
       submissionId,
       submissionURL,
       auditLogUrl,
-      status,
-      userId
+      status
     });
 
     console.log('[DocuSeal Webhook] Submission created successfully:', newSubmission);
@@ -771,87 +686,15 @@ router.post('/webhook', catchAsync(async (req, res) => {
     const auditLogUrl = submission.audit_log_url || data.audit_log_url;
     const status = submission.status || 'completed';
 
-    // Get email from submitters array
-    const submitters = data.submitters || submission.submitters || [];
-    console.log('[DocuSeal Webhook] ===== SUBMISSION COMPLETED DEBUG =====');
-    console.log('[DocuSeal Webhook] All submitters:', JSON.stringify(submitters, null, 2));
-    console.log('[DocuSeal Webhook] Full data object:', JSON.stringify(data, null, 2));
-    console.log('[DocuSeal Webhook] Full submission object:', JSON.stringify(submission, null, 2));
-    console.log('[DocuSeal Webhook] External ID:', submission.external_id || data.external_id);
-
-    let email = null;
-    let userId = null;
-
-    // Strategy 1: Use external_id to find the user directly (most reliable)
-    const externalId = submission.external_id || data.external_id;
-    if (externalId && externalId.startsWith('user_')) {
-      const extractedUserId = externalId.replace('user_', '');
-      console.log('[DocuSeal Webhook] Found external_id, extracting user ID:', extractedUserId);
-
-      try {
-        const user = await User.findById(extractedUserId);
-        if (user) {
-          email = user.email;
-          userId = user.id;
-          console.log('[DocuSeal Webhook] ✅ Found user by external_id:', { userId: user.id, email: user.email });
-        } else {
-          console.log('[DocuSeal Webhook] ⚠️ User not found with ID:', extractedUserId);
-        }
-      } catch (error) {
-        console.log('[DocuSeal Webhook] ⚠️ Error finding user by external_id:', error.message);
-      }
-    }
-
-    // Strategy 2: If external_id didn't work, try finding submitter by role
-    if (!email && submitters.length > 0) {
-      const clientSubmitter = submitters.find(s =>
-        s.name && (
-          s.name.toLowerCase() === 'client' ||
-          s.name.toLowerCase() === 'customer' ||
-          s.name.toLowerCase() === 'investor'
-        )
-      );
-
-      if (clientSubmitter && clientSubmitter.email) {
-        email = clientSubmitter.email;
-        console.log('[DocuSeal Webhook] Found client submitter by role name:', {
-          name: clientSubmitter.name,
-          email: clientSubmitter.email
-        });
-      }
-    }
-
-    // Strategy 3: Check if data/submission has an email field directly
-    if (!email && data.email) {
-      email = data.email;
-      console.log('[DocuSeal Webhook] Found email in data.email:', email);
-    } else if (!email && submission.email) {
-      email = submission.email;
-      console.log('[DocuSeal Webhook] Found email in submission.email:', email);
-    }
-
-    // Strategy 4: Use first submitter with an email (least reliable)
-    if (!email && submitters.length > 0) {
-      const firstWithEmail = submitters.find(s => s.email);
-      email = firstWithEmail ? firstWithEmail.email : null;
-      console.log('[DocuSeal Webhook] ⚠️ Using first submitter with email (fallback):', email);
-
-      // Log submitter structure for debugging
-      if (submitters.length > 0) {
-        console.log('[DocuSeal Webhook] First submitter structure:', submitters[0]);
-      }
-    }
-
-    console.log('[DocuSeal Webhook] ===== FINAL RESULT =====');
-    console.log('[DocuSeal Webhook] Extracted email:', email);
-    console.log('[DocuSeal Webhook] Extracted userId:', userId);
+    // Get email from submitters or top-level email
+    const submitters = data.submitters || [];
+    const email = data.email || (submitters.length > 0 ? submitters[0].email : null);
 
     // Construct submission URL
     const submissionURL = submission.url || (slug ? `https://docuseal.com/s/${slug}` : null);
 
     console.log('[DocuSeal Webhook] Extracted data:', {
       submissionId,
-      email,
       slug,
       submissionURL,
       auditLogUrl,
@@ -875,26 +718,13 @@ router.post('/webhook', catchAsync(async (req, res) => {
     if (!existingSubmission) {
       console.log('[DocuSeal Webhook] No existing submission found - creating new one');
 
-      // If we don't have userId yet, try to find user by email
-      if (!userId && email) {
-        const user = await User.findByEmail(email);
-        userId = user ? user.id : null;
-
-        if (!user) {
-          console.log('[DocuSeal Webhook] ⚠️ Warning: No user found for email:', email);
-        } else {
-          console.log('[DocuSeal Webhook] Found user by email:', { id: user.id, email: user.email });
-        }
-      }
-
       // Create new submission if it doesn't exist
       const newSubmission = await DocusealSubmission.create({
         email,
         submissionId,
         submissionURL,
         auditLogUrl,
-        status,
-        userId
+        status
       });
 
       console.log('[DocuSeal Webhook] New submission created:', newSubmission);
@@ -946,7 +776,6 @@ router.post('/webhook', catchAsync(async (req, res) => {
 router.get('/verifyUserSignature', authenticate, catchAsync(async (req, res) => {
   // Get user ID from authenticated token
   const userId = req.auth.userId || req.user.id;
-  const supabase = require('../config/database').getSupabase();
 
   // Find the user to get their email
   const user = await User.findById(userId);
@@ -958,13 +787,51 @@ router.get('/verifyUserSignature', authenticate, catchAsync(async (req, res) => 
   }
 
   // Get all submissions for this user's email
-  const userSubmissions = await DocusealSubmission.findByEmail(user.email);
+  let userSubmissions = await DocusealSubmission.findByEmail(user.email);
+
+  // If no local submissions found, query DocuSeal API directly as fallback
+  // (handles cases where webhook didn't fire, e.g. default/public templates)
+  if (userSubmissions.length === 0) {
+    console.log('[verifyUserSignature] No local submissions found, querying DocuSeal API for:', user.email);
+    try {
+      const result = await apiManager.getSubmissions({}, { q: user.email });
+      if (!result.error && result.body && Array.isArray(result.body)) {
+        const completedSubmissions = result.body.filter(s =>
+          s.status === 'completed' ||
+          (s.submitters && s.submitters.some(sub => sub.status === 'completed' && sub.email === user.email))
+        );
+        console.log('[verifyUserSignature] DocuSeal API found', completedSubmissions.length, 'completed submissions');
+        if (completedSubmissions.length > 0) {
+          // Create local records for completed submissions found on DocuSeal
+          for (const sub of completedSubmissions) {
+            const submitterEmail = sub.submitters?.find(s => s.email === user.email)?.email || user.email;
+            const slug = sub.slug || '';
+            try {
+              const created = await DocusealSubmission.create({
+                email: submitterEmail,
+                submissionId: String(sub.id),
+                submissionURL: slug ? `https://docuseal.com/s/${slug}` : '',
+                auditLogUrl: sub.audit_log_url || '',
+                status: 'completed'
+              });
+              console.log('[verifyUserSignature] Created local submission record:', created.id);
+            } catch (createErr) {
+              console.log('[verifyUserSignature] Could not create local record (may already exist):', createErr.message);
+            }
+          }
+          // Re-fetch local submissions after creating records
+          userSubmissions = await DocusealSubmission.findByEmail(user.email);
+        }
+      }
+    } catch (apiErr) {
+      console.log('[verifyUserSignature] DocuSeal API fallback failed:', apiErr.message);
+    }
+  }
 
   // Get all payments for this user's email
   const userPayments = await Payment.findByEmail(user.email);
 
   // Debug logging
-  console.log('[verifyUserSignature] User email:', user.email);
   console.log('[verifyUserSignature] Total payments found:', userPayments.length);
   console.log('[verifyUserSignature] Payment submission IDs:', userPayments.map(p => ({
     submissionId: p.submissionId,
@@ -973,8 +840,7 @@ router.get('/verifyUserSignature', authenticate, catchAsync(async (req, res) => 
   console.log('[verifyUserSignature] DocuSeal submissions:', userSubmissions.map(s => ({
     id: s.id,
     submissionId: s.submissionId,
-    type: typeof s.submissionId,
-    creditsCharged: s.credits_charged
+    type: typeof s.submissionId
   })));
 
   // Extract unique submission IDs that are already used in payments
@@ -993,61 +859,10 @@ router.get('/verifyUserSignature', authenticate, catchAsync(async (req, res) => 
     const submissionIdStr = String(submission.id); // Use submission.id instead of submission.submissionId
     const isUsed = usedSubmissionIds.has(submissionIdStr);
     console.log(`[verifyUserSignature] Checking submission ID ${submissionIdStr} (DocuSeal ID: ${submission.submissionId}): isUsed=${isUsed}`);
-    return !isUsed && submission.status == 'completed';
+    return !isUsed;
   });
 
   const hasFreeSubmission = freeSubmissions.length > 0;
-
-  // Deduct credits for any completed submissions that haven't been charged yet
-  // This handles the case where webhooks can't reach localhost
-  console.log('[verifyUserSignature] hasFreeSubmission:', hasFreeSubmission);
-  console.log('[verifyUserSignature] freeSubmissions:', freeSubmissions.map(s => ({
-    id: s.id,
-    status: s.status,
-    credits_charged: s.credits_charged
-  })));
-
-  if (hasFreeSubmission) {
-    const unchargedSubmissions = freeSubmissions.filter(s => !s.credits_charged);
-    console.log('[verifyUserSignature] unchargedSubmissions count:', unchargedSubmissions.length);
-
-    for (const submission of unchargedSubmissions) {
-      try {
-        console.log('[verifyUserSignature] Processing submission:', submission.id);
-        const subscriptionOwner = await findSubscriptionOwnerForDocuSeal();
-        console.log('[verifyUserSignature] subscriptionOwner:', subscriptionOwner);
-
-        if (subscriptionOwner) {
-          console.log('[verifyUserSignature] Deducting credits for submission:', submission.id);
-          const deductResult = await deductCreditsForOperation(subscriptionOwner.id, 'document_signing');
-          console.log('[verifyUserSignature] deductResult:', deductResult);
-
-          if (deductResult.success) {
-            // Mark submission as charged
-            const { error: updateError } = await supabase
-              .from('docuseal_submissions')
-              .update({ credits_charged: true })
-              .eq('id', submission.id);
-
-            if (updateError) {
-              console.error('[verifyUserSignature] Error marking submission as charged:', updateError);
-            } else {
-              console.log('[verifyUserSignature] Credits deducted and submission marked:', {
-                submissionId: submission.id,
-                cost: deductResult.cost,
-                newBalance: deductResult.newBalance
-              });
-            }
-          } else {
-            console.log('[verifyUserSignature] Credit deduction failed:', deductResult.reason || deductResult);
-          }
-        }
-      } catch (creditError) {
-        console.error('[verifyUserSignature] Error deducting credits:', creditError);
-        // Continue processing - don't fail the verification
-      }
-    }
-  }
 
   res.status(200).json({
     success: true,
