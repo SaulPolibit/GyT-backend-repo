@@ -750,28 +750,9 @@ router.post('/webhook', catchAsync(async (req, res) => {
 
     console.log('[DocuSeal Webhook] Submission created successfully:', newSubmission);
 
-    // Deduct credits for document signing (PAYG model)
-    try {
-      const subscriptionOwner = await findSubscriptionOwnerForDocuSeal();
-      if (subscriptionOwner) {
-        console.log('[DocuSeal Webhook] Found subscription owner:', subscriptionOwner.id);
-        const deductResult = await deductCreditsForOperation(subscriptionOwner.id, 'document_signing');
-        if (deductResult.success) {
-          console.log('[DocuSeal Webhook] Credits deducted:', {
-            cost: deductResult.cost,
-            newBalance: deductResult.newBalance,
-            model: deductResult.model
-          });
-        } else {
-          console.log('[DocuSeal Webhook] Credit deduction skipped or failed:', deductResult);
-        }
-      } else {
-        console.log('[DocuSeal Webhook] No subscription owner found - skipping credit deduction');
-      }
-    } catch (creditError) {
-      console.error('[DocuSeal Webhook] Error deducting credits:', creditError);
-      // Don't fail the webhook - submission was created successfully
-    }
+    // NOTE: Credits are deducted in the frontend when the user starts signing,
+    // not in the webhook. This ensures credits are only charged when the user
+    // initiates the signing process, not when DocuSeal creates the submission.
 
     return res.status(201).json({
       success: true,
