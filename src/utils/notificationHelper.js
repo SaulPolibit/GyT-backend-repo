@@ -3,7 +3,46 @@
  * Functions to send notifications to investors for various events
  */
 
-const { Notification, Subscription, Structure } = require('../models/supabase');
+const Notification = require('../models/supabase/notification');
+const NotificationSettings = require('../models/supabase/notificationSettings');
+const Subscription = require('../models/supabase/subscription');
+const { Structure } = require('../models/supabase');
+
+/**
+ * Create a security alert notification for a user
+ * @param {string} userId - User ID
+ * @param {string} alertType - Type of security alert
+ * @param {string} title - Notification title
+ * @param {string} message - Notification message
+ */
+async function createSecurityAlertNotification(userId, alertType, title, message) {
+  try {
+    const settings = await NotificationSettings.findByUserId(userId);
+    const shouldSend = !settings || settings.securityAlerts !== false;
+
+    if (!shouldSend) {
+      console.log('[Security Alert] User has security alerts disabled, skipping notification');
+      return;
+    }
+
+    await Notification.create({
+      userId,
+      notificationType: 'security_alert',
+      channel: 'portal',
+      title,
+      message,
+      priority: 'high',
+      metadata: {
+        alertType,
+        timestamp: new Date().toISOString()
+      }
+    });
+
+    console.log(`[Security Alert] Notification created - ${alertType}`);
+  } catch (error) {
+    console.error('[Security Alert] Error creating notification:', error.message);
+  }
+}
 
 /**
  * Get all investor user IDs for a structure
@@ -268,6 +307,7 @@ async function sendPaymentConfirmation(userId, paymentData, senderId) {
 }
 
 module.exports = {
+  createSecurityAlertNotification,
   getStructureInvestorUserIds,
   notifyStructureInvestors,
   sendCapitalCallNotice,
