@@ -9,7 +9,10 @@ const { authenticate } = require('../middleware/auth');
 const { catchAsync } = require('../middleware/errorHandler');
 const stripeService = require('../services/stripe.service');
 const { User } = require('../models/supabase');
-const { upsertPlatformSubscription } = require('../services/subscriptionLimits.service');
+const { upsertPlatformSubscription, getPlatformSubscription } = require('../services/subscriptionLimits.service');
+
+// Minimum subscription period in months
+const MINIMUM_SUBSCRIPTION_MONTHS = 12;
 
 // Subscription model from environment (defaults to 'payg')
 const SUBSCRIPTION_MODEL = process.env.SUBSCRIPTION_MODEL || 'payg';
@@ -211,7 +214,7 @@ router.post('/remove-service', authenticate, catchAsync(async (req, res) => {
 
 /**
  * POST /api/stripe/cancel-subscription
- * Cancel the current subscription
+ * Cancel the current subscription (requires minimum 12-month period)
  */
 router.post('/cancel-subscription', authenticate, catchAsync(async (req, res) => {
   const { immediately = false } = req.body;
@@ -220,6 +223,31 @@ router.post('/cancel-subscription', authenticate, catchAsync(async (req, res) =>
 
   if (!user || !user.stripeSubscriptionId) {
     return res.status(400).json({ success: false, message: 'No active subscription found' });
+  }
+
+  // Check minimum subscription period using platform subscription
+  const platformSubscription = await getPlatformSubscription();
+
+  if (platformSubscription && platformSubscription.subscription_start_date) {
+    const startDate = new Date(platformSubscription.subscription_start_date);
+    const now = new Date();
+    const monthsDiff = (now.getFullYear() - startDate.getFullYear()) * 12 +
+                       (now.getMonth() - startDate.getMonth());
+
+    if (monthsDiff < MINIMUM_SUBSCRIPTION_MONTHS) {
+      const remainingMonths = MINIMUM_SUBSCRIPTION_MONTHS - monthsDiff;
+      const endDate = new Date(startDate);
+      endDate.setMonth(endDate.getMonth() + MINIMUM_SUBSCRIPTION_MONTHS);
+
+      return res.status(400).json({
+        success: false,
+        message: `Cannot cancel subscription before minimum ${MINIMUM_SUBSCRIPTION_MONTHS}-month period. You have ${remainingMonths} month(s) remaining until ${endDate.toLocaleDateString()}.`,
+        minimumPeriod: MINIMUM_SUBSCRIPTION_MONTHS,
+        subscriptionStartDate: startDate.toISOString(),
+        earliestCancellationDate: endDate.toISOString(),
+        remainingMonths
+      });
+    }
   }
 
   const subscription = await stripeService.cancelSubscription(user.stripeSubscriptionId, immediately);

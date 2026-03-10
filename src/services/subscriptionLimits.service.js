@@ -147,6 +147,28 @@ const formatCurrency = (amount) => {
 // ============================================================================
 
 /**
+ * Get any existing platform subscription (for upsert purposes)
+ * Finds the most recent subscription regardless of status
+ * @returns {Promise<Object|null>} Platform subscription or null
+ */
+const getAnyPlatformSubscription = async () => {
+  const supabase = getSupabase();
+
+  const { data: subscription, error } = await supabase
+    .from('platform_subscription')
+    .select('*')
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .single();
+
+  if (error && error.code !== 'PGRST116') { // PGRST116 = no rows returned
+    console.error('[SubscriptionLimits] Error fetching any platform subscription:', error);
+  }
+
+  return subscription || null;
+};
+
+/**
  * Get the active platform subscription
  * @returns {Promise<Object|null>} Platform subscription or null
  */
@@ -261,8 +283,8 @@ const getUserSubscription = async (userId) => {
 const upsertPlatformSubscription = async (data) => {
   const supabase = getSupabase();
 
-  // Check if subscription exists
-  const existing = await getPlatformSubscription();
+  // Check if ANY subscription exists (not just active ones) to avoid duplicates
+  const existing = await getAnyPlatformSubscription();
 
   const subscriptionData = {
     stripe_subscription_id: data.stripeSubscriptionId,
@@ -325,9 +347,10 @@ const upsertPlatformSubscription = async (data) => {
 const updatePlatformSubscription = async (updates) => {
   const supabase = getSupabase();
 
-  const existing = await getPlatformSubscription();
+  // Use getAnyPlatformSubscription to find the existing row regardless of status
+  const existing = await getAnyPlatformSubscription();
   if (!existing) {
-    throw new Error('No active platform subscription found');
+    throw new Error('No platform subscription found');
   }
 
   // Map camelCase to snake_case
@@ -900,6 +923,7 @@ module.exports = {
   getCreditCost,
 
   // Platform subscription functions (NEW)
+  getAnyPlatformSubscription,
   getPlatformSubscription,
   getSubscription,
   upsertPlatformSubscription,
