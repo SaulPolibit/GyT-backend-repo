@@ -1,171 +1,106 @@
 /**
- * Stripe API Routes
- * Handles subscription management, payments, and webhooks
+ * Stripe Routes
+ * Handles all Stripe subscription endpoints
  */
+
 const express = require('express');
 const router = express.Router();
 const { authenticate } = require('../middleware/auth');
 const { catchAsync } = require('../middleware/errorHandler');
 const stripeService = require('../services/stripe.service');
 const { User } = require('../models/supabase');
+const { upsertPlatformSubscription } = require('../services/subscriptionLimits.service');
 
-// Initialize Stripe SDK for direct API calls
-const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
+// Subscription model from environment (defaults to 'payg')
+const SUBSCRIPTION_MODEL = process.env.SUBSCRIPTION_MODEL || 'payg';
+const SUBSCRIPTION_TIER = process.env.SUBSCRIPTION_TIER || 'starter';
 
-// Price IDs - Get these from Stripe Dashboard after creating products
-// You can also use environment variables for flexibility
+// Price IDs from environment
 const PRICE_IDS = {
-  SERVICE_BASE_COST: process.env.STRIPE_SERVICE_BASE_COST_PRICE_ID || 'price_1xxxxxxxxxxxxx',
-  ADDITIONAL_SERVICE_COST: process.env.STRIPE_ADDITIONAL_SERVICE_COST_PRICE_ID || 'price_2xxxxxxxxxxxxx'
-};
-
-// Service mapping: frontend ID -> Stripe price ID
-const SERVICE_MAPPING = {
-  'additional_service': PRICE_IDS.ADDITIONAL_SERVICE_COST
+  SERVICE_BASE_COST: process.env.STRIPE_SERVICE_BASE_COST_PRICE_ID,
+  ADDITIONAL_SERVICE_COST: process.env.STRIPE_ADDITIONAL_SERVICE_COST_PRICE_ID
 };
 
 /**
- * @route   GET /api/stripe/config
- * @desc    Get public Stripe configuration (publishable key, price IDs)
- * @access  Public
+ * GET /api/stripe/config
+ * Get Stripe configuration for frontend
  */
 router.get('/config', (req, res) => {
   res.json({
     success: true,
     publishableKey: process.env.STRIPE_PUBLISHABLE_KEY,
     priceIds: PRICE_IDS,
-    currency: 'mxn'
+    currency: 'usd'
   });
 });
 
 /**
- * @route   POST /api/stripe/create-customer
- * @desc    Create a Stripe customer for the authenticated user
- * @access  Private
+ * POST /api/stripe/create-customer
+ * Create a Stripe customer for the authenticated user
  */
 router.post('/create-customer', authenticate, catchAsync(async (req, res) => {
-  const user = await User.findById(req.user.id);
+  const userId = req.user.id || req.user.userId;
+  const user = await User.findById(userId);
 
   if (!user) {
-    return res.status(404).json({
-      success: false,
-      message: 'User not found'
-    });
+    return res.status(404).json({ success: false, message: 'User not found' });
   }
 
-  // Check if user already has a Stripe customer ID
+  // Check if customer already exists
   if (user.stripeCustomerId) {
-    console.log(`[Stripe Routes] User ${user.id} already has customer ID: ${user.stripeCustomerId}`);
-    return res.json({
-      success: true,
-      customerId: user.stripeCustomerId,
-      message: 'Customer already exists'
-    });
+    return res.json({ success: true, customerId: user.stripeCustomerId });
   }
 
-  // Create Stripe customer
+  // Create new customer
   const customer = await stripeService.createCustomer(user);
 
-  // Save customer ID to user record
-  await User.findByIdAndUpdate(user.id, {
-    stripeCustomerId: customer.id
-  });
+  // Update user with Stripe customer ID
+  await User.findByIdAndUpdate(userId, { stripeCustomerId: customer.id });
 
-  res.json({
-    success: true,
-    customerId: customer.id,
-    message: 'Stripe customer created successfully'
-  });
+  res.json({ success: true, customerId: customer.id });
 }));
 
 /**
- * @route   POST /api/stripe/create-subscription
- * @desc    Create a new subscription with Service Base Cost and optional Additional Service
- * @access  Private
- * @body    {
- *            cardToken: 'tok_xxxxx', // Required - Stripe card token (backend creates payment method)
- *            additionalServiceQuantity: 2, // Optional - quantity of Additional Service Base Cost (default: 0)
- *            includeAdditionalService: true, // Optional - legacy boolean support
- *            trialDays: 7 // Optional trial period in days
- *          }
+ * POST /api/stripe/create-subscription
+ * Create a subscription for the authenticated user
  */
 router.post('/create-subscription', authenticate, catchAsync(async (req, res) => {
-  const { cardToken, additionalServiceQuantity, includeAdditionalService = false, trialDays } = req.body;
-  const user = await User.findById(req.user.id);
+  const { cardToken, additionalServiceQuantity = 0, trialDays } = req.body;
+  const userId = req.user.id || req.user.userId;
+  const user = await User.findById(userId);
 
   if (!user) {
-    return res.status(404).json({
-      success: false,
-      message: 'User not found'
-    });
+    return res.status(404).json({ success: false, message: 'User not found' });
   }
 
-  // Validate card token
   if (!cardToken) {
-    return res.status(400).json({
-      success: false,
-      message: 'Card token is required. Please provide a valid card token.'
-    });
+    return res.status(400).json({ success: false, message: 'Card token is required' });
   }
 
-  // Ensure user has a Stripe customer ID
   if (!user.stripeCustomerId) {
-    return res.status(400).json({
-      success: false,
-      message: 'Please create a customer first. Call POST /api/stripe/create-customer'
-    });
+    return res.status(400).json({ success: false, message: 'Please create a customer first' });
   }
 
-  // Create payment method from card token
-  console.log(`[Stripe Routes] Creating payment method from card token`);
+  // Create payment method from token and attach to customer
   const paymentMethod = await stripeService.createPaymentMethodFromToken(cardToken);
-
-  // Attach payment method to customer and set as default
-  console.log(`[Stripe Routes] Attaching payment method ${paymentMethod.id} to customer ${user.stripeCustomerId}`);
   await stripeService.attachPaymentMethodToCustomer(paymentMethod.id, user.stripeCustomerId);
 
-  // Check if user already has an active subscription
-  if (user.stripeSubscriptionId) {
-    const existingSub = await stripeService.getSubscription(user.stripeSubscriptionId);
-    if (existingSub.status === 'active' || existingSub.status === 'trialing') {
-      return res.status(400).json({
-        success: false,
-        message: 'User already has an active subscription',
-        subscriptionId: existingSub.id,
-        status: existingSub.status
-      });
-    }
-  }
-
-  // Build addons array with quantities
+  // Prepare addons
   const addons = [];
-
-  // Support both new quantity-based approach and legacy boolean approach
-  let quantity = 0;
-  if (additionalServiceQuantity !== undefined) {
-    quantity = parseInt(additionalServiceQuantity) || 0;
-  } else if (includeAdditionalService) {
-    quantity = 1;
-  }
-
-  if (quantity > 0) {
+  if (additionalServiceQuantity > 0 && PRICE_IDS.ADDITIONAL_SERVICE_COST) {
     addons.push({
       priceId: PRICE_IDS.ADDITIONAL_SERVICE_COST,
-      quantity: quantity
+      quantity: additionalServiceQuantity
     });
   }
 
-  // Create subscription options
-  const options = {
-    default_payment_method: paymentMethod.id // Set payment method for immediate charge
-  };
-
+  // Subscription options
+  const options = { default_payment_method: paymentMethod.id };
   if (trialDays && trialDays > 0) {
     options.trial_period_days = trialDays;
   }
 
-  // Create subscription with Service Base Cost + optional Additional Service
-  console.log(`[Stripe Routes] Creating subscription with payment method ${paymentMethod.id}`);
+  // Create subscription
   const subscription = await stripeService.createSubscription(
     user.stripeCustomerId,
     PRICE_IDS.SERVICE_BASE_COST,
@@ -173,769 +108,271 @@ router.post('/create-subscription', authenticate, catchAsync(async (req, res) =>
     options
   );
 
-  // Save subscription info to user
-  await User.findByIdAndUpdate(user.id, {
+  // Update user with subscription info
+  await User.findByIdAndUpdate(userId, {
     stripeSubscriptionId: subscription.id,
     subscriptionStatus: subscription.status
   });
 
-  console.log('[Stripe Routes] Subscription created:', {
-    subscriptionId: subscription.id,
-    status: subscription.status,
-    latestInvoice: subscription.latest_invoice?.id,
-    paymentIntent: subscription.latest_invoice?.payment_intent?.id
+  // Update platform subscription with model and tier from env vars
+  await upsertPlatformSubscription({
+    stripeSubscriptionId: subscription.id,
+    stripeCustomerId: user.stripeCustomerId,
+    subscriptionModel: SUBSCRIPTION_MODEL,
+    subscriptionTier: SUBSCRIPTION_TIER,
+    subscriptionStatus: subscription.status,
+    subscriptionStartDate: new Date().toISOString(),
+    managedByUserId: userId
   });
 
-  // With payment method attached, subscription should charge immediately
-  // Status will be 'active' if successful, 'incomplete' if payment failed
-  let message = 'Subscription created successfully!';
-  if (subscription.status === 'active') {
-    message = 'Subscription created and payment successful!';
-  } else if (subscription.status === 'incomplete') {
-    message = 'Subscription created but payment failed. Please check your payment method.';
-  }
+  console.log(`[Stripe] Created subscription with model: ${SUBSCRIPTION_MODEL}, tier: ${SUBSCRIPTION_TIER}`);
 
   res.json({
     success: true,
     subscriptionId: subscription.id,
     status: subscription.status,
-    message: message
+    subscriptionModel: SUBSCRIPTION_MODEL,
+    subscriptionTier: SUBSCRIPTION_TIER,
+    message: subscription.status === 'active'
+      ? 'Subscription created and payment successful!'
+      : 'Subscription created'
   });
 }));
 
 /**
- * @route   POST /api/stripe/add-additional-service
- * @desc    Add Additional Service Base Cost to existing subscription
- * @access  Private
+ * GET /api/stripe/subscription
+ * Get the current user's subscription
+ */
+router.get('/subscription', authenticate, catchAsync(async (req, res) => {
+  const userId = req.user.id || req.user.userId;
+  const user = await User.findById(userId);
+
+  if (!user || !user.stripeSubscriptionId) {
+    return res.json({ success: true, subscription: null });
+  }
+
+  const subscription = await stripeService.getSubscription(user.stripeSubscriptionId);
+  res.json({ success: true, subscription });
+}));
+
+/**
+ * POST /api/stripe/add-additional-service
+ * Add an additional service to the current subscription
  */
 router.post('/add-additional-service', authenticate, catchAsync(async (req, res) => {
-  const user = await User.findById(req.user.id);
+  const userId = req.user.id || req.user.userId;
+  const user = await User.findById(userId);
 
-  if (!user) {
-    return res.status(404).json({
-      success: false,
-      message: 'User not found'
-    });
+  if (!user || !user.stripeSubscriptionId) {
+    return res.status(400).json({ success: false, message: 'No active subscription found' });
   }
 
-  if (!user.stripeSubscriptionId) {
-    return res.status(400).json({
-      success: false,
-      message: 'No active subscription found. Create a subscription first.'
-    });
+  if (!PRICE_IDS.ADDITIONAL_SERVICE_COST) {
+    return res.status(500).json({ success: false, message: 'Additional service price not configured' });
   }
 
-  const priceId = PRICE_IDS.ADDITIONAL_SERVICE_COST;
-
-  // Add Additional Service to subscription
-  const subscriptionItem = await stripeService.addAddonToSubscription(
+  const item = await stripeService.addAddonToSubscription(
     user.stripeSubscriptionId,
-    priceId
+    PRICE_IDS.ADDITIONAL_SERVICE_COST
   );
 
-  res.json({
-    success: true,
-    subscriptionItem: subscriptionItem,
-    message: 'Additional Service Base Cost added successfully. Prorated charges will apply.'
-  });
+  res.json({ success: true, subscriptionItem: item });
 }));
 
 /**
- * @route   POST /api/stripe/update-service-quantity
- * @desc    Update quantity of Additional Service in subscription
- * @access  Private
- * @body    { subscriptionItemId: 'si_xxxxx', quantity: 2 }
+ * POST /api/stripe/update-service-quantity
+ * Update the quantity of a service item
  */
 router.post('/update-service-quantity', authenticate, catchAsync(async (req, res) => {
   const { subscriptionItemId, quantity } = req.body;
-  const user = await User.findById(req.user.id);
 
-  if (!user) {
-    return res.status(404).json({
-      success: false,
-      message: 'User not found'
-    });
+  if (!subscriptionItemId || quantity === undefined) {
+    return res.status(400).json({ success: false, message: 'subscriptionItemId and quantity are required' });
   }
 
-  if (!subscriptionItemId || !quantity) {
-    return res.status(400).json({
-      success: false,
-      message: 'subscriptionItemId and quantity are required'
-    });
-  }
-
-  if (quantity < 1) {
-    return res.status(400).json({
-      success: false,
-      message: 'Quantity must be at least 1. Use remove-service to remove the item.'
-    });
-  }
-
-  // Update Additional Service quantity
   const updated = await stripeService.updateSubscriptionItemQuantity(subscriptionItemId, quantity);
-
-  res.json({
-    success: true,
-    subscriptionItem: updated,
-    message: `Additional Service quantity updated to ${quantity}. Prorated charges will apply.`
-  });
+  res.json({ success: true, subscriptionItem: updated });
 }));
 
 /**
- * @route   POST /api/stripe/remove-service
- * @desc    Remove Additional Service from subscription
- * @access  Private
- * @body    { subscriptionItemId: 'si_xxxxx' }
+ * POST /api/stripe/remove-service
+ * Remove a service item from the subscription
  */
 router.post('/remove-service', authenticate, catchAsync(async (req, res) => {
   const { subscriptionItemId } = req.body;
-  const user = await User.findById(req.user.id);
-
-  if (!user) {
-    return res.status(404).json({
-      success: false,
-      message: 'User not found'
-    });
-  }
 
   if (!subscriptionItemId) {
-    return res.status(400).json({
-      success: false,
-      message: 'subscriptionItemId is required'
-    });
+    return res.status(400).json({ success: false, message: 'subscriptionItemId is required' });
   }
 
-  // Remove Additional Service
   const deleted = await stripeService.removeAddonFromSubscription(subscriptionItemId);
-
-  res.json({
-    success: true,
-    deleted: deleted,
-    message: 'Additional Service removed successfully. Prorated credits will apply.'
-  });
+  res.json({ success: true, deleted });
 }));
 
 /**
- * @route   GET /api/stripe/subscription
- * @desc    Get current subscription details (from platform_subscription table)
- * @access  Private
- */
-router.get('/subscription', authenticate, catchAsync(async (req, res) => {
-  const user = await User.findById(req.user.id);
-
-  if (!user) {
-    return res.status(404).json({
-      success: false,
-      message: 'User not found'
-    });
-  }
-
-  // Get platform subscription (single subscription for entire platform)
-  const platformSub = await getPlatformSubscription();
-
-  if (!platformSub || !platformSub.stripe_subscription_id) {
-    return res.json({
-      success: true,
-      subscription: null,
-      message: 'No subscription found'
-    });
-  }
-
-  // Check if current user is the manager of the subscription
-  const isOwner = platformSub.managed_by_user_id === req.user.id;
-
-  console.log(`[Stripe] Getting platform subscription for user ${req.user.id}, isOwner: ${isOwner}`);
-
-  const subscription = await stripeService.getSubscription(platformSub.stripe_subscription_id);
-
-  res.json({
-    success: true,
-    subscription: subscription,
-    subscriptionOwnerId: platformSub.managed_by_user_id,
-    isOwner: isOwner
-  });
-}));
-
-/**
- * @route   POST /api/stripe/cancel-subscription
- * @desc    Cancel subscription (at period end or immediately) - only subscription manager can cancel
- * @access  Private (admin/root only)
- * @body    { immediately: false }
- *
- * Note: 12-month minimum commitment is enforced. Users cannot cancel
- * before 12 months from subscription start date.
+ * POST /api/stripe/cancel-subscription
+ * Cancel the current subscription
  */
 router.post('/cancel-subscription', authenticate, catchAsync(async (req, res) => {
   const { immediately = false } = req.body;
-  const { updatePlatformSubscription } = require('../services/subscriptionLimits.service');
-  const user = await User.findById(req.user.id);
+  const userId = req.user.id || req.user.userId;
+  const user = await User.findById(userId);
 
-  if (!user) {
-    return res.status(404).json({
-      success: false,
-      message: 'User not found'
-    });
+  if (!user || !user.stripeSubscriptionId) {
+    return res.status(400).json({ success: false, message: 'No active subscription found' });
   }
 
-  // Get platform subscription
-  const platformSub = await getPlatformSubscription();
+  const subscription = await stripeService.cancelSubscription(user.stripeSubscriptionId, immediately);
 
-  if (!platformSub || !platformSub.stripe_subscription_id) {
-    return res.status(400).json({
-      success: false,
-      message: 'No active subscription found'
-    });
-  }
-
-  // Only the subscription manager can cancel
-  if (platformSub.managed_by_user_id !== req.user.id) {
-    return res.status(403).json({
-      success: false,
-      message: 'Only the subscription manager can cancel the subscription'
-    });
-  }
-
-  // Check 12-month minimum commitment from platform_subscription
-  if (platformSub.subscription_start_date) {
-    const startDate = new Date(platformSub.subscription_start_date);
-    const now = new Date();
-    const monthsElapsed = (now.getFullYear() - startDate.getFullYear()) * 12 +
-                          (now.getMonth() - startDate.getMonth());
-
-    const MINIMUM_MONTHS = 12;
-
-    console.log('[Stripe Cancel] Commitment check:', {
-      startDate: startDate.toISOString(),
-      now: now.toISOString(),
-      monthsElapsed,
-      MINIMUM_MONTHS,
-      shouldBlock: monthsElapsed < MINIMUM_MONTHS
-    });
-
-    if (monthsElapsed < MINIMUM_MONTHS) {
-      const remainingMonths = MINIMUM_MONTHS - monthsElapsed;
-      const canCancelDate = new Date(startDate);
-      canCancelDate.setMonth(canCancelDate.getMonth() + MINIMUM_MONTHS);
-
-      console.log('[Stripe Cancel] BLOCKING cancellation - minimum commitment not met');
-
-      return res.status(403).json({
-        success: false,
-        error: 'MINIMUM_COMMITMENT',
-        message: `Your subscription has a 12-month minimum commitment. You can cancel after ${canCancelDate.toLocaleDateString()}.`,
-        monthsElapsed,
-        remainingMonths,
-        canCancelDate: canCancelDate.toISOString()
-      });
-    }
-  } else {
-    console.log('[Stripe Cancel] No subscription_start_date found, skipping commitment check');
-  }
-
-  const subscription = await stripeService.cancelSubscription(
-    platformSub.stripe_subscription_id,
-    immediately
-  );
-
-  // Update platform subscription status
-  const newStatus = immediately ? 'canceled' : 'canceling';
-  await updatePlatformSubscription({
-    subscriptionStatus: newStatus
+  await User.findByIdAndUpdate(userId, {
+    subscriptionStatus: immediately ? 'canceled' : 'canceling'
   });
 
-  res.json({
-    success: true,
-    subscription: subscription,
-    message: immediately
-      ? 'Subscription canceled immediately'
-      : 'Subscription will cancel at the end of the current period'
-  });
+  res.json({ success: true, subscription });
 }));
 
 /**
- * @route   GET /api/stripe/commitment-status
- * @desc    Get subscription commitment status (12-month minimum) from platform_subscription
- * @access  Private
- */
-router.get('/commitment-status', authenticate, catchAsync(async (req, res) => {
-  // Get platform subscription commitment status
-  const platformSub = await getPlatformSubscription();
-
-  if (!platformSub?.subscription_start_date) {
-    return res.json({
-      success: true,
-      canCancel: true,
-      hasCommitment: false,
-      message: 'No commitment period found'
-    });
-  }
-
-  const startDate = new Date(platformSub.subscription_start_date);
-  const now = new Date();
-  const monthsElapsed = (now.getFullYear() - startDate.getFullYear()) * 12 +
-                        (now.getMonth() - startDate.getMonth());
-
-  const MINIMUM_MONTHS = 12;
-  const canCancel = monthsElapsed >= MINIMUM_MONTHS;
-  const remainingMonths = Math.max(0, MINIMUM_MONTHS - monthsElapsed);
-
-  const canCancelDate = new Date(startDate);
-  canCancelDate.setMonth(canCancelDate.getMonth() + MINIMUM_MONTHS);
-
-  res.json({
-    success: true,
-    canCancel,
-    hasCommitment: true,
-    startDate: startDate.toISOString(),
-    monthsElapsed,
-    remainingMonths,
-    canCancelDate: canCancelDate.toISOString(),
-    subscriptionId: platformSub.id,
-    message: canCancel
-      ? 'Commitment period completed. You can cancel anytime.'
-      : `${remainingMonths} month(s) remaining in your 12-month commitment.`
-  });
-}));
-
-/**
- * @route   POST /api/stripe/reactivate-subscription
- * @desc    Reactivate a subscription scheduled for cancellation - only subscription manager can reactivate
- * @access  Private (admin/root only)
+ * POST /api/stripe/reactivate-subscription
+ * Reactivate a subscription scheduled for cancellation
  */
 router.post('/reactivate-subscription', authenticate, catchAsync(async (req, res) => {
-  const { updatePlatformSubscription } = require('../services/subscriptionLimits.service');
-  const user = await User.findById(req.user.id);
+  const userId = req.user.id || req.user.userId;
+  const user = await User.findById(userId);
 
-  if (!user) {
-    return res.status(404).json({
-      success: false,
-      message: 'User not found'
-    });
+  if (!user || !user.stripeSubscriptionId) {
+    return res.status(400).json({ success: false, message: 'No subscription found' });
   }
 
-  // Get platform subscription
-  const platformSub = await getPlatformSubscription();
+  const subscription = await stripeService.reactivateSubscription(user.stripeSubscriptionId);
 
-  if (!platformSub || !platformSub.stripe_subscription_id) {
-    return res.status(400).json({
-      success: false,
-      message: 'No subscription found'
-    });
-  }
+  await User.findByIdAndUpdate(userId, { subscriptionStatus: subscription.status });
 
-  // Only the subscription manager can reactivate
-  if (platformSub.managed_by_user_id !== req.user.id) {
-    return res.status(403).json({
-      success: false,
-      message: 'Only the subscription manager can reactivate the subscription'
-    });
-  }
-
-  const subscription = await stripeService.reactivateSubscription(platformSub.stripe_subscription_id);
-
-  // Update platform subscription status
-  await updatePlatformSubscription({
-    subscriptionStatus: subscription.status
-  });
-
-  res.json({
-    success: true,
-    subscription: subscription,
-    message: 'Subscription reactivated successfully'
-  });
+  res.json({ success: true, subscription });
 }));
 
 /**
- * @route   GET /api/stripe/invoices
- * @desc    Get customer invoices (from platform_subscription)
- * @access  Private
+ * GET /api/stripe/invoices
+ * Get invoices for the current user
  */
 router.get('/invoices', authenticate, catchAsync(async (req, res) => {
   const { limit = 10 } = req.query;
+  const userId = req.user.id || req.user.userId;
+  const user = await User.findById(userId);
 
-  // Get platform subscription's customer ID
-  const platformSub = await getPlatformSubscription();
-  const customerId = platformSub?.stripe_customer_id;
-
-  if (!customerId) {
-    return res.json({
-      success: true,
-      invoices: [],
-      message: 'No customer found'
-    });
+  if (!user || !user.stripeCustomerId) {
+    return res.json({ success: true, invoices: [] });
   }
 
-  const invoices = await stripeService.getCustomerInvoices(
-    customerId,
-    parseInt(limit)
-  );
-
-  res.json({
-    success: true,
-    invoices: invoices.data,
-    hasMore: invoices.has_more
-  });
+  const invoices = await stripeService.getCustomerInvoices(user.stripeCustomerId, parseInt(limit));
+  res.json({ success: true, invoices: invoices.data });
 }));
 
 /**
- * @route   GET /api/stripe/upcoming-invoice
- * @desc    Get preview of next invoice (from platform_subscription)
- * @access  Private
+ * GET /api/stripe/upcoming-invoice
+ * Get the upcoming invoice for the current user
  */
 router.get('/upcoming-invoice', authenticate, catchAsync(async (req, res) => {
-  // Get platform subscription's customer ID
-  const platformSub = await getPlatformSubscription();
-  const customerId = platformSub?.stripe_customer_id;
+  const userId = req.user.id || req.user.userId;
+  const user = await User.findById(userId);
 
-  if (!customerId) {
-    return res.json({
-      success: true,
-      upcomingInvoice: null
-    });
+  if (!user || !user.stripeCustomerId) {
+    return res.json({ success: true, upcomingInvoice: null });
   }
 
-  const upcomingInvoice = await stripeService.getUpcomingInvoice(customerId);
-
-  res.json({
-    success: true,
-    upcomingInvoice: upcomingInvoice
-  });
+  const upcomingInvoice = await stripeService.getUpcomingInvoice(user.stripeCustomerId);
+  res.json({ success: true, upcomingInvoice });
 }));
 
 /**
- * @route   POST /api/stripe/create-setup-intent
- * @desc    Create setup intent for saving payment method
- * @access  Private
+ * POST /api/stripe/webhook
+ * Handle Stripe webhook events
+ * Note: This needs raw body, so should be mounted before JSON parser
  */
-router.post('/create-setup-intent', authenticate, catchAsync(async (req, res) => {
-  const user = await User.findById(req.user.id);
+router.post('/webhook', express.raw({ type: 'application/json' }), catchAsync(async (req, res) => {
+  const sig = req.headers['stripe-signature'];
+  const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
 
-  if (!user) {
-    return res.status(404).json({
-      success: false,
-      message: 'User not found'
-    });
+  if (!webhookSecret) {
+    console.error('[Stripe Webhook] Webhook secret not configured');
+    return res.status(500).send('Webhook secret not configured');
   }
 
-  if (!user.stripeCustomerId) {
-    return res.status(400).json({
-      success: false,
-      message: 'Please create a customer first'
-    });
+  let event;
+  try {
+    event = stripeService.verifyWebhookSignature(req.body, sig, webhookSecret);
+  } catch (err) {
+    console.error(`[Stripe Webhook] Signature verification failed: ${err.message}`);
+    return res.status(400).send(`Webhook Error: ${err.message}`);
   }
 
-  const setupIntent = await stripeService.createSetupIntent(user.stripeCustomerId);
+  console.log(`[Stripe Webhook] Received event: ${event.type}`);
 
-  res.json({
-    success: true,
-    clientSecret: setupIntent.client_secret
-  });
-}));
+  // Handle the event
+  switch (event.type) {
+    case 'customer.subscription.created':
+    case 'customer.subscription.updated': {
+      const subscription = event.data.object;
+      const user = await User.findOne({ stripeCustomerId: subscription.customer });
+      if (user) {
+        await User.findByIdAndUpdate(user.id, {
+          stripeSubscriptionId: subscription.id,
+          subscriptionStatus: subscription.status
+        });
 
-/**
- * @route   GET /api/stripe/payment-methods
- * @desc    Get saved payment methods (from platform_subscription)
- * @access  Private
- */
-router.get('/payment-methods', authenticate, catchAsync(async (req, res) => {
-  // Get platform subscription's customer ID
-  const platformSub = await getPlatformSubscription();
-  const customerId = platformSub?.stripe_customer_id;
+        // Also update platform_subscription with model from env
+        await upsertPlatformSubscription({
+          stripeSubscriptionId: subscription.id,
+          stripeCustomerId: subscription.customer,
+          subscriptionModel: SUBSCRIPTION_MODEL,
+          subscriptionTier: SUBSCRIPTION_TIER,
+          subscriptionStatus: subscription.status,
+          managedByUserId: user.id
+        });
 
-  if (!customerId) {
-    return res.json({
-      success: true,
-      paymentMethods: []
-    });
-  }
-
-  const paymentMethods = await stripeService.getPaymentMethods(customerId);
-
-  res.json({
-    success: true,
-    paymentMethods: paymentMethods
-  });
-}));
-
-/**
- * @route   POST /api/stripe/webhook
- * @desc    Stripe webhook handler
- * @access  Public (verified with webhook secret)
- */
-router.post(
-  '/webhook',
-  express.raw({ type: 'application/json' }),
-  catchAsync(async (req, res) => {
-    const sig = req.headers['stripe-signature'];
-    const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
-
-    if (!webhookSecret) {
-      console.error('[Stripe Webhook] STRIPE_WEBHOOK_SECRET not configured');
-      return res.status(500).send('Webhook secret not configured');
-    }
-
-    let event;
-
-    try {
-      event = stripeService.verifyWebhookSignature(req.body, sig, webhookSecret);
-    } catch (err) {
-      console.error('[Stripe Webhook] Signature verification failed:', err.message);
-      return res.status(400).send(`Webhook Error: ${err.message}`);
-    }
-
-    console.log(`[Stripe Webhook] Received event: ${event.type}`);
-
-    // Handle the event
-    try {
-      switch (event.type) {
-        case 'customer.subscription.created':
-        case 'customer.subscription.updated':
-          const subscription = event.data.object;
-          console.log(`[Stripe Webhook] Subscription ${event.type}: ${subscription.id}`, {
-            customer: subscription.customer,
-            metadata: subscription.metadata
-          });
-
-          // Get subscription model and tier from metadata
-          const subModel = subscription.metadata?.subscriptionModel || 'tier_based';
-          const subTier = subscription.metadata?.planTier || 'starter';
-          const defaultLimits = getDefaultLimits(subModel, subTier);
-
-          // Build platform subscription data
-          const platformSubData = {
-            stripeSubscriptionId: subscription.id,
-            stripeCustomerId: subscription.customer,
-            subscriptionStatus: subscription.status,
-            subscriptionModel: subModel,
-            subscriptionTier: subTier
-          };
-
-          // Set subscription_start_date only on creation (12-month minimum commitment)
-          if (event.type === 'customer.subscription.created') {
-            const startTimestamp = subscription.start_date || subscription.current_period_start;
-            platformSubData.subscriptionStartDate = new Date(startTimestamp * 1000).toISOString();
-            console.log(`[Stripe Webhook] Setting subscription start date: ${platformSubData.subscriptionStartDate}`);
-
-            // Set subscription limits based on tier
-            platformSubData.maxInvestors = defaultLimits.maxInvestors;
-            platformSubData.maxTotalCommitment = defaultLimits.maxTotalCommitment;
-            console.log(`[Stripe Webhook] Setting limits: maxInvestors=${defaultLimits.maxInvestors}, maxTotalCommitment=${defaultLimits.maxTotalCommitment}`);
-
-            // Reset extra purchases for new subscription
-            platformSubData.extraInvestorsPurchased = 0;
-            platformSubData.extraCommitmentPurchased = 0;
-
-            // Set emissions from metadata
-            const emissionsAvailable = parseInt(subscription.metadata?.emissionsAvailable || '5');
-            platformSubData.emissionsAvailable = emissionsAvailable;
-            platformSubData.emissionsUsed = 0;
-            console.log(`[Stripe Webhook] Setting emissions: available=${emissionsAvailable}, used=0`);
-
-            // For PAYG model, initialize credit balance if provided in metadata
-            if (subModel === 'payg') {
-              const initialCredits = parseInt(subscription.metadata?.initialCredits || '0');
-              if (initialCredits > 0) {
-                platformSubData.creditBalance = initialCredits;
-                console.log(`[Stripe Webhook] Setting initial credit balance: ${initialCredits}`);
-              }
-            }
-
-            // Set managed_by_user_id from metadata or find user
-            let managedByUserId = subscription.metadata?.userId;
-            if (!managedByUserId) {
-              // Try to find user by stripeCustomerId or email
-              let user = await User.findOne({ stripeCustomerId: subscription.customer });
-              if (!user) {
-                try {
-                  const stripeCustomer = await stripe.customers.retrieve(subscription.customer);
-                  if (stripeCustomer && !stripeCustomer.deleted && stripeCustomer.email) {
-                    user = await User.findOne({ email: stripeCustomer.email.toLowerCase() });
-                  }
-                } catch (customerErr) {
-                  console.error(`[Stripe Webhook] Error fetching customer:`, customerErr);
-                }
-              }
-              managedByUserId = user?.id;
-            }
-            platformSubData.managedByUserId = managedByUserId;
-          }
-
-          console.log(`[Stripe Webhook] Platform subscription data to save:`, JSON.stringify(platformSubData, null, 2));
-
-          // Create or update platform subscription
-          try {
-            const updatedSub = await upsertPlatformSubscription(platformSubData);
-            console.log(`[Stripe Webhook] Platform subscription upserted: ${updatedSub.id}, status: ${subscription.status}`);
-          } catch (upsertError) {
-            console.error(`[Stripe Webhook] Error upserting platform subscription:`, upsertError);
-          }
-          break;
-
-        case 'customer.subscription.deleted':
-          const deletedSub = event.data.object;
-          console.log(`[Stripe Webhook] Subscription deleted: ${deletedSub.id}`);
-
-          // Update platform subscription status to canceled
-          try {
-            const { updatePlatformSubscription } = require('../services/subscriptionLimits.service');
-            await updatePlatformSubscription({
-              subscriptionStatus: 'canceled'
-            });
-            console.log(`[Stripe Webhook] Platform subscription status updated to canceled`);
-          } catch (cancelError) {
-            console.error(`[Stripe Webhook] Error updating platform subscription status:`, cancelError);
-          }
-          break;
-
-        case 'invoice.payment_succeeded':
-          const successInvoice = event.data.object;
-          console.log(`[Stripe Webhook] Payment succeeded for invoice: ${successInvoice.id}`);
-          // You can send email notifications here
-          break;
-
-        case 'invoice.payment_failed':
-          const failedInvoice = event.data.object;
-          console.log(`[Stripe Webhook] Payment failed for invoice: ${failedInvoice.id}`);
-          // Send payment failure notification
-          break;
-
-        case 'customer.subscription.trial_will_end':
-          const trialEndingSub = event.data.object;
-          console.log(`[Stripe Webhook] Trial ending soon for subscription: ${trialEndingSub.id}`);
-          // Send trial ending reminder
-          break;
-
-        case 'checkout.session.completed':
-          const session = event.data.object;
-          console.log(`[Stripe Webhook] Checkout session completed: ${session.id}`);
-
-          // Check for extra purchases via metadata
-          const { purchaseType, userId: purchaseUserId, extraInvestors, extraCommitment, millionsToAdd } = session.metadata || {};
-
-          // Check if this session was already processed (prevent duplicates with verify-extra-purchase endpoint)
-          const supabaseForWebhook = require('../config/database').getSupabase();
-          const { data: existingWebhookSession } = await supabaseForWebhook
-            .from('processed_stripe_sessions')
-            .select('id')
-            .eq('session_id', session.id)
-            .maybeSingle();
-
-          if (existingWebhookSession) {
-            console.log(`[Stripe Webhook] Session ${session.id} already processed, skipping`);
-            break;
-          }
-
-          // Mark session as processed FIRST (prevents race conditions with verify endpoint)
-          if (purchaseUserId && (purchaseType === 'extra_investors' || purchaseType === 'extra_aum' || purchaseType === 'credit_topup' || purchaseType === 'subscription')) {
-            const { error: webhookInsertError } = await supabaseForWebhook
-              .from('processed_stripe_sessions')
-              .insert({ session_id: session.id, user_id: purchaseUserId });
-
-            if (webhookInsertError) {
-              if (webhookInsertError.code === '23505') {
-                console.log(`[Stripe Webhook] Session ${session.id} already processed (concurrent), skipping`);
-                break;
-              }
-              console.error(`[Stripe Webhook] Error marking session as processed:`, webhookInsertError);
-              // Continue anyway - better to potentially double-process than miss a payment
-            }
-          }
-
-          if (purchaseType === 'extra_investors' && purchaseUserId && extraInvestors) {
-            console.log(`[Stripe Webhook] Processing extra investors purchase: ${extraInvestors} for user ${purchaseUserId}`);
-            try {
-              const updatedUser = await addExtraInvestors(purchaseUserId, parseInt(extraInvestors));
-              console.log(`[Stripe Webhook] Extra investors added. New limit: ${updatedUser.max_investors}`);
-            } catch (err) {
-              console.error(`[Stripe Webhook] Error adding extra investors:`, err);
-            }
-          }
-
-          if (purchaseType === 'extra_aum' && purchaseUserId && extraCommitment) {
-            console.log(`[Stripe Webhook] Processing extra AUM purchase: ${extraCommitment} for user ${purchaseUserId}`);
-            try {
-              const updatedUser = await addExtraCommitment(purchaseUserId, parseFloat(extraCommitment));
-              console.log(`[Stripe Webhook] Extra AUM added. New limit: ${updatedUser.max_total_commitment}`);
-            } catch (err) {
-              console.error(`[Stripe Webhook] Error adding extra AUM:`, err);
-            }
-          }
-
-          // Handle credit top-up (PAYG model)
-          const creditsToAdd = session.metadata?.creditsToAdd;
-          if (purchaseType === 'credit_topup' && purchaseUserId && creditsToAdd) {
-            console.log(`[Stripe Webhook] Processing credit top-up: ${creditsToAdd} cents for user ${purchaseUserId}`);
-            try {
-              const updatedUser = await addCredits(purchaseUserId, parseInt(creditsToAdd));
-              console.log(`[Stripe Webhook] Credits added. New balance: ${updatedUser.credit_balance}`);
-            } catch (err) {
-              console.error(`[Stripe Webhook] Error adding credits:`, err);
-            }
-          }
-
-          // Handle initial subscription with credits (PAYG)
-          const initialCredits = session.metadata?.initialCredits;
-          if (purchaseType === 'subscription' && purchaseUserId && initialCredits) {
-            console.log(`[Stripe Webhook] Adding initial credits: ${initialCredits} cents for user ${purchaseUserId}`);
-            try {
-              const updatedUser = await addCredits(purchaseUserId, parseInt(initialCredits));
-              console.log(`[Stripe Webhook] Initial credits added. Balance: ${updatedUser.credit_balance}`);
-            } catch (err) {
-              console.error(`[Stripe Webhook] Error adding initial credits:`, err);
-            }
-          }
-          break;
-
-        default:
-          console.log(`[Stripe Webhook] Unhandled event type: ${event.type}`);
+        console.log(`[Stripe Webhook] Updated subscription for user ${user.id} - model: ${SUBSCRIPTION_MODEL}`);
       }
-    } catch (error) {
-      console.error(`[Stripe Webhook] Error processing event ${event.type}:`, error);
-      // Still return 200 to acknowledge receipt
+      break;
     }
 
-    // Return 200 to acknowledge receipt
-    res.json({ received: true });
-  })
-);
+    case 'customer.subscription.deleted': {
+      const deletedSub = event.data.object;
+      const user = await User.findOne({ stripeCustomerId: deletedSub.customer });
+      if (user) {
+        await User.findByIdAndUpdate(user.id, { subscriptionStatus: 'canceled' });
 
-/**
- * @route   POST /api/stripe/create-products
- * @desc    Create initial products and prices (development/setup only)
- * @access  Private (admin only)
- */
-router.post('/create-products', authenticate, catchAsync(async (req, res) => {
-  const user = await User.findById(req.user.id);
+        // Also update platform_subscription status
+        await upsertPlatformSubscription({
+          stripeSubscriptionId: deletedSub.id,
+          subscriptionStatus: 'canceled'
+        });
 
-  // Only allow admins or root users
-  if (!user || (user.role !== 0 && user.role !== 1)) {
-    return res.status(403).json({
-      success: false,
-      message: 'Only administrators can create products'
-    });
+        console.log(`[Stripe Webhook] Marked subscription as canceled for user ${user.id}`);
+      }
+      break;
+    }
+
+    case 'invoice.payment_succeeded': {
+      const invoice = event.data.object;
+      console.log(`[Stripe Webhook] Payment succeeded for invoice ${invoice.id}`);
+      break;
+    }
+
+    case 'invoice.payment_failed': {
+      const invoice = event.data.object;
+      console.log(`[Stripe Webhook] Payment failed for invoice ${invoice.id}`);
+      // Optionally update user subscription status
+      const user = await User.findOne({ stripeCustomerId: invoice.customer });
+      if (user) {
+        await User.findByIdAndUpdate(user.id, { subscriptionStatus: 'past_due' });
+      }
+      break;
+    }
+
+    default:
+      console.log(`[Stripe Webhook] Unhandled event type: ${event.type}`);
   }
 
-  const products = await stripeService.createProducts();
-
-  res.json({
-    success: true,
-    products: products,
-    message: 'Products created successfully. Save these price IDs to your environment variables.'
-  });
-}));
-
-/**
- * @route   GET /api/stripe/products
- * @desc    List all available products and prices
- * @access  Public
- */
-router.get('/products', catchAsync(async (req, res) => {
-  const products = await stripeService.listProducts();
-
-  res.json({
-    success: true,
-    products: products
-  });
+  res.json({ received: true });
 }));
 
 // ==========================================
@@ -967,7 +404,6 @@ router.post('/connect/create-account', authenticate, catchAsync(async (req, res)
 
   // Check if user already has a Connect account
   if (user.stripeAccountId) {
-    console.log(`[Stripe Connect Routes] User ${user.id} already has account: ${user.stripeAccountId}`);
     return res.json({
       success: true,
       accountId: user.stripeAccountId,
@@ -1027,8 +463,8 @@ router.post('/connect/onboarding-link', authenticate, catchAsync(async (req, res
 
   // Default URLs if not provided
   const baseUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
-  const finalReturnUrl = returnUrl || `${baseUrl}/investor/settings?tab=payments&onboarding=complete`;
-  const finalRefreshUrl = refreshUrl || `${baseUrl}/investor/settings?tab=payments&onboarding=refresh`;
+  const finalReturnUrl = returnUrl || `${baseUrl}/lp-portal/settings?tab=payment&onboarding=complete`;
+  const finalRefreshUrl = refreshUrl || `${baseUrl}/lp-portal/settings?tab=payment&onboarding=refresh`;
 
   // Create onboarding link
   const accountLink = await stripeService.createAccountLink(
@@ -1187,7 +623,7 @@ router.get('/connect/balance', authenticate, catchAsync(async (req, res) => {
 }));
 
 // ==========================================
-// ADMIN ROUTES (for Fund Managers)
+// ADMIN ROUTES (for Fund Managers - roles 1, 2)
 // ==========================================
 
 /**
@@ -1287,7 +723,6 @@ router.post('/connect/admin/send-invite/:investorId', authenticate, catchAsync(a
   );
 
   // TODO: Send email with onboarding link using your email service
-  console.log(`[Stripe Connect Admin] Onboarding link for ${investor.email}: ${accountLink.url}`);
 
   res.json({
     success: true,
@@ -1315,7 +750,7 @@ router.get('/connect/admin/investors', authenticate, catchAsync(async (req, res)
   }
 
   // Get all investors (role 3)
-  const investors = await User.findAll({ role: 3 });
+  const investors = await User.find({ role: 3 });
 
   const investorsWithStatus = investors.map(investor => ({
     id: investor.id,
@@ -1344,10 +779,6 @@ router.get('/connect/admin/investors', authenticate, catchAsync(async (req, res)
  * @route   POST /api/stripe/webhook-connect
  * @desc    Handle Stripe Connect webhook events
  * @access  Public (Stripe only - verified by signature)
- *
- * Configure in Stripe Dashboard:
- * - Endpoint URL: https://your-domain.com/api/stripe/webhook-connect
- * - Events: account.*, transfer.*, payout.*, capability.updated
  */
 router.post('/webhook-connect', catchAsync(async (req, res) => {
   const signature = req.headers['stripe-signature'];
@@ -1449,6 +880,7 @@ router.post('/webhook-connect', catchAsync(async (req, res) => {
       case 'transfer.failed': {
         const transfer = event.data.object;
         console.error(`[Stripe Connect Webhook] Transfer failed: ${transfer.id}`);
+        // TODO: Handle failed transfer - notify admin, retry, etc.
         break;
       }
 
@@ -1477,6 +909,7 @@ router.post('/webhook-connect', catchAsync(async (req, res) => {
         const user = await User.findOne({ stripeAccountId: accountId });
         if (user) {
           console.log(`[Stripe Connect Webhook] Payout completed for user ${user.id}: ${payout.amount / 100} ${payout.currency.toUpperCase()}`);
+          // TODO: Send notification to investor about payout
         }
         break;
       }
@@ -1489,6 +922,7 @@ router.post('/webhook-connect', catchAsync(async (req, res) => {
         const user = await User.findOne({ stripeAccountId: accountId });
         if (user) {
           console.error(`[Stripe Connect Webhook] Payout failed for user ${user.id}: ${payout.failure_message}`);
+          // TODO: Notify investor about failed payout
         }
         break;
       }
@@ -1500,511 +934,20 @@ router.post('/webhook-connect', catchAsync(async (req, res) => {
       case 'capability.updated': {
         const capability = event.data.object;
         const accountId = event.account;
-        console.log(`[Stripe Connect Webhook] Capability updated for ${accountId}: ${capability.id} - ${capability.status}`);
+        console.log(`[Stripe Connect Webhook] Capability ${capability.id} updated for ${accountId}: ${capability.status}`);
         break;
       }
 
       default:
         console.log(`[Stripe Connect Webhook] Unhandled event type: ${event.type}`);
     }
-
-    res.status(200).json({ received: true, type: event.type });
-
   } catch (error) {
     console.error(`[Stripe Connect Webhook] Error processing event ${event.type}:`, error);
-    res.status(200).json({ received: true, error: error.message });
-  }
-}));
-
-/**
- * @route   GET /api/stripe/webhook-connect/health
- * @desc    Health check for Connect webhook endpoint
- * @access  Public
- */
-router.get('/webhook-connect/health', (req, res) => {
-  res.json({
-    status: 'ok',
-    endpoint: 'stripe-connect-webhook',
-    timestamp: new Date().toISOString()
-  });
-});
-
-// ==========================================
-// SUBSCRIPTION LIMITS ENDPOINTS
-// ==========================================
-
-const {
-  getSubscriptionUsage,
-  updateUserSubscription,
-  validateStructureCreation,
-  validateInvestorCreation,
-  addExtraInvestors,
-  addExtraCommitment,
-  addCredits,
-  getPlatformSubscription,
-  upsertPlatformSubscription,
-  getDefaultLimits
-} = require('../services/subscriptionLimits.service');
-
-/**
- * @route   GET /api/stripe/subscription-usage
- * @desc    Get current subscription usage stats (investor count, commitment)
- * @access  Private
- */
-router.get('/subscription-usage', authenticate, catchAsync(async (req, res) => {
-  const userId = req.user.id;
-
-  try {
-    const usage = await getSubscriptionUsage(userId);
-    res.json({
-      success: true,
-      usage
-    });
-  } catch (error) {
-    console.error('[Stripe] Error getting subscription usage:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to get subscription usage',
-      error: error.message
-    });
-  }
-}));
-
-/**
- * @route   POST /api/stripe/update-subscription-plan
- * @desc    Update user's subscription model and tier
- * @access  Private
- */
-router.post('/update-subscription-plan', authenticate, catchAsync(async (req, res) => {
-  const userId = req.user.id;
-  const { model, tier } = req.body;
-
-  // Validate model
-  if (!model || !['tier_based', 'payg'].includes(model)) {
-    return res.status(400).json({
-      success: false,
-      message: 'Invalid subscription model. Must be "tier_based" or "payg"'
-    });
+    // Don't return error - acknowledge receipt to Stripe
   }
 
-  // Validate tier based on model
-  const validTiers = model === 'payg'
-    ? ['starter', 'growth', 'enterprise']
-    : ['starter', 'professional', 'enterprise'];
-
-  if (!tier || !validTiers.includes(tier)) {
-    return res.status(400).json({
-      success: false,
-      message: `Invalid tier for ${model} model. Must be one of: ${validTiers.join(', ')}`
-    });
-  }
-
-  try {
-    await updateUserSubscription(userId, model, tier);
-
-    // Get updated usage stats
-    const usage = await getSubscriptionUsage(userId);
-
-    res.json({
-      success: true,
-      message: 'Subscription plan updated successfully',
-      usage
-    });
-  } catch (error) {
-    console.error('[Stripe] Error updating subscription plan:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to update subscription plan',
-      error: error.message
-    });
-  }
-}));
-
-/**
- * @route   POST /api/stripe/purchase-extra-investors
- * @desc    Create Stripe checkout session for purchasing extra investor slots
- * @access  Private
- */
-router.post('/purchase-extra-investors', authenticate, catchAsync(async (req, res) => {
-  const userId = req.user.id;
-  const userEmail = req.user.email;
-  const { extraInvestors } = req.body;
-
-  // Validate input
-  if (!extraInvestors || typeof extraInvestors !== 'number' || extraInvestors <= 0) {
-    return res.status(400).json({
-      success: false,
-      message: 'Invalid extraInvestors value. Must be a positive number.'
-    });
-  }
-
-  try {
-    const priceId = process.env.STRIPE_PRICE_EXTRA_INVESTOR;
-    console.log('[Stripe] STRIPE_PRICE_EXTRA_INVESTOR:', priceId ? 'SET' : 'NOT SET', priceId);
-    if (!priceId) {
-      return res.status(500).json({
-        success: false,
-        message: 'Extra investors price not configured. Set STRIPE_PRICE_EXTRA_INVESTOR env var.'
-      });
-    }
-
-    // Quantity = number of investors to add
-    // If Stripe price is per investor: +10 = 10 units, +25 = 25 units, +50 = 50 units
-    const quantity = extraInvestors;
-
-    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
-
-    // Create Stripe checkout session
-    const session = await stripe.checkout.sessions.create({
-      mode: 'payment',
-      customer_email: userEmail,
-      line_items: [
-        {
-          price: priceId,
-          quantity: quantity,
-        },
-      ],
-      metadata: {
-        userId,
-        purchaseType: 'extra_investors',
-        extraInvestors: extraInvestors.toString(),
-      },
-      success_url: `${frontendUrl}/investment-manager/settings?tab=subscription&success=true&purchase=extra_investors&quantity=${extraInvestors}&session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url: `${frontendUrl}/investment-manager/settings?tab=subscription&canceled=true`,
-    });
-
-    console.log('[Stripe] Extra investors checkout session created:', { userId, extraInvestors, quantity, sessionId: session.id });
-
-    res.json({
-      success: true,
-      url: session.url,
-      sessionId: session.id
-    });
-  } catch (error) {
-    console.error('[Stripe] Error creating extra investors checkout:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to create checkout session',
-      error: error.message
-    });
-  }
-}));
-
-/**
- * @route   POST /api/stripe/purchase-extra-aum
- * @desc    Create Stripe checkout session for purchasing extra AUM capacity
- * @access  Private
- */
-router.post('/purchase-extra-aum', authenticate, catchAsync(async (req, res) => {
-  const userId = req.user.id;
-  const userEmail = req.user.email;
-  const { extraCommitment } = req.body;
-
-  // Validate input - should be in dollars (e.g., 1000000 for $1M)
-  if (!extraCommitment || typeof extraCommitment !== 'number' || extraCommitment <= 0) {
-    return res.status(400).json({
-      success: false,
-      message: 'Invalid extraCommitment value. Must be a positive number in dollars.'
-    });
-  }
-
-  try {
-    const priceId = process.env.STRIPE_PRICE_EXTRA_AUM;
-    if (!priceId) {
-      return res.status(500).json({
-        success: false,
-        message: 'Extra AUM price not configured. Set STRIPE_PRICE_EXTRA_AUM env var.'
-      });
-    }
-
-    // Calculate quantity (price is per $1M)
-    const millionsToAdd = extraCommitment / 1000000;
-    const quantity = Math.ceil(millionsToAdd); // +1M = 1 unit
-
-    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
-
-    // Create Stripe checkout session
-    const session = await stripe.checkout.sessions.create({
-      mode: 'payment',
-      customer_email: userEmail,
-      line_items: [
-        {
-          price: priceId,
-          quantity: quantity,
-        },
-      ],
-      metadata: {
-        userId,
-        purchaseType: 'extra_aum',
-        extraCommitment: extraCommitment.toString(),
-        millionsToAdd: millionsToAdd.toString(),
-      },
-      success_url: `${frontendUrl}/investment-manager/settings?tab=subscription&success=true&purchase=extra_aum&quantity=${millionsToAdd}&session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url: `${frontendUrl}/investment-manager/settings?tab=subscription&canceled=true`,
-    });
-
-    console.log('[Stripe] Extra AUM checkout session created:', { userId, extraCommitment, millionsToAdd, quantity, sessionId: session.id });
-
-    res.json({
-      success: true,
-      url: session.url,
-      sessionId: session.id
-    });
-  } catch (error) {
-    console.error('[Stripe] Error creating extra AUM checkout:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to create checkout session',
-      error: error.message
-    });
-  }
-}));
-
-/**
- * @route   POST /api/stripe/verify-extra-purchase
- * @desc    Verify a completed checkout session and apply extra purchase to user limits
- * @access  Private
- */
-router.post('/verify-extra-purchase', authenticate, catchAsync(async (req, res) => {
-  const userId = req.user.id;
-  const { sessionId } = req.body;
-  const supabase = require('../config/database').getSupabase();
-
-  if (!sessionId) {
-    return res.status(400).json({
-      success: false,
-      message: 'Session ID is required'
-    });
-  }
-
-  try {
-    // Check if session was already processed in database (prevent duplicates)
-    const { data: existingSession } = await supabase
-      .from('processed_stripe_sessions')
-      .select('id')
-      .eq('session_id', sessionId)
-      .maybeSingle();
-
-    if (existingSession) {
-      console.log('[Stripe] Session already processed, skipping:', sessionId);
-      return res.json({
-        success: true,
-        message: 'Purchase already applied',
-        alreadyProcessed: true
-      });
-    }
-
-    // Mark session as processed FIRST (prevents race conditions)
-    const { error: insertError } = await supabase
-      .from('processed_stripe_sessions')
-      .insert({ session_id: sessionId, user_id: userId });
-
-    if (insertError) {
-      // If insert fails due to unique constraint, session was already processed
-      if (insertError.code === '23505') {
-        console.log('[Stripe] Session already processed (concurrent), skipping:', sessionId);
-        return res.json({
-          success: true,
-          message: 'Purchase already applied',
-          alreadyProcessed: true
-        });
-      }
-      console.error('[Stripe] Error marking session as processed:', insertError);
-    }
-
-    // Retrieve the checkout session from Stripe
-    const session = await stripe.checkout.sessions.retrieve(sessionId);
-
-    console.log('[Stripe] Verifying extra purchase session:', { sessionId, status: session.payment_status, metadata: session.metadata });
-
-    // Check if payment was successful
-    if (session.payment_status !== 'paid') {
-      return res.status(400).json({
-        success: false,
-        message: 'Payment not completed',
-        status: session.payment_status
-      });
-    }
-
-    // Verify the session belongs to this user
-    if (session.metadata?.userId !== userId) {
-      return res.status(403).json({
-        success: false,
-        message: 'Session does not belong to this user'
-      });
-    }
-
-    const { purchaseType, extraInvestors, extraCommitment } = session.metadata || {};
-
-    if (purchaseType === 'extra_investors' && extraInvestors) {
-      const investorsToAdd = parseInt(extraInvestors);
-      console.log(`[Stripe] Applying extra investors: ${investorsToAdd} for user ${userId}`);
-
-      const updatedUser = await addExtraInvestors(userId, investorsToAdd);
-
-      return res.json({
-        success: true,
-        message: `Added ${investorsToAdd} extra investor slots`,
-        newLimit: updatedUser.max_investors,
-        extraPurchased: updatedUser.extra_investors_purchased
-      });
-    }
-
-    if (purchaseType === 'extra_aum' && extraCommitment) {
-      const commitmentToAdd = parseFloat(extraCommitment);
-      console.log(`[Stripe] Applying extra AUM: ${commitmentToAdd} for user ${userId}`);
-
-      const updatedUser = await addExtraCommitment(userId, commitmentToAdd);
-
-      return res.json({
-        success: true,
-        message: `Added $${(commitmentToAdd / 1000000).toFixed(0)}M extra AUM capacity`,
-        newLimit: parseFloat(updatedUser.max_total_commitment),
-        extraPurchased: parseFloat(updatedUser.extra_commitment_purchased)
-      });
-    }
-
-    // Handle credit top-up
-    const creditsToAdd = session.metadata?.creditsToAdd;
-    if (purchaseType === 'credit_topup' && creditsToAdd) {
-      const credits = parseInt(creditsToAdd);
-      console.log(`[Stripe] Applying credit top-up: ${credits} cents for user ${userId}`);
-
-      const updatedUser = await addCredits(userId, credits);
-
-      return res.json({
-        success: true,
-        message: `Added $${(credits / 100).toFixed(2)} to your credit balance`,
-        newBalance: updatedUser.credit_balance
-      });
-    }
-
-    return res.status(400).json({
-      success: false,
-      message: 'Unknown purchase type or missing metadata'
-    });
-
-  } catch (error) {
-    console.error('[Stripe] Error verifying extra purchase:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to verify purchase',
-      error: error.message
-    });
-  }
-}));
-
-/**
- * @route   POST /api/stripe/purchase-credits
- * @desc    Create Stripe checkout session for purchasing credits (PAYG model)
- * @access  Private
- */
-router.post('/purchase-credits', authenticate, catchAsync(async (req, res) => {
-  const userId = req.user.id;
-  const userEmail = req.user.email;
-  const { amountInCents } = req.body;
-
-  // Validate input (minimum $10 = 1000 cents)
-  if (!amountInCents || typeof amountInCents !== 'number' || amountInCents < 1000) {
-    return res.status(400).json({
-      success: false,
-      message: 'Invalid amount. Minimum top-up is $10.00'
-    });
-  }
-
-  try {
-    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
-
-    // Create Stripe checkout session with dynamic pricing
-    const session = await stripe.checkout.sessions.create({
-      mode: 'payment',
-      customer_email: userEmail,
-      line_items: [
-        {
-          price_data: {
-            currency: 'usd',
-            product_data: {
-              name: 'Credit Top-Up',
-              description: `Add $${(amountInCents / 100).toFixed(2)} to your credit balance`,
-            },
-            unit_amount: amountInCents,
-          },
-          quantity: 1,
-        },
-      ],
-      metadata: {
-        userId,
-        purchaseType: 'credit_topup',
-        creditsToAdd: amountInCents.toString(),
-      },
-      success_url: `${frontendUrl}/investment-manager/settings?tab=subscription&success=true&purchase=credits&amount=${amountInCents}&session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url: `${frontendUrl}/investment-manager/settings?tab=subscription&canceled=true`,
-    });
-
-    console.log('[Stripe] Credit top-up checkout session created:', { userId, amountInCents, sessionId: session.id });
-
-    res.json({
-      success: true,
-      url: session.url,
-      sessionId: session.id
-    });
-  } catch (error) {
-    console.error('[Stripe] Error creating credit top-up checkout:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to create checkout session',
-      error: error.message
-    });
-  }
-}));
-
-/**
- * @route   POST /api/stripe/validate-structure-creation
- * @desc    Validate if a new structure can be created (checks commitment limits)
- * @access  Private
- */
-router.post('/validate-structure-creation', authenticate, catchAsync(async (req, res) => {
-  const userId = req.user.id;
-  const { totalCommitment } = req.body;
-
-  try {
-    const validation = await validateStructureCreation(userId, totalCommitment || 0);
-    res.json({
-      success: true,
-      validation
-    });
-  } catch (error) {
-    console.error('[Stripe] Error validating structure creation:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to validate structure creation',
-      error: error.message
-    });
-  }
-}));
-
-/**
- * @route   GET /api/stripe/validate-investor-creation
- * @desc    Validate if a new investor can be created (checks investor limits)
- * @access  Private
- */
-router.get('/validate-investor-creation', authenticate, catchAsync(async (req, res) => {
-  const userId = req.user.id;
-
-  try {
-    const validation = await validateInvestorCreation(userId);
-    res.json({
-      success: true,
-      validation
-    });
-  } catch (error) {
-    console.error('[Stripe] Error validating investor creation:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to validate investor creation',
-      error: error.message
-    });
-  }
+  // Always return 200 to acknowledge receipt
+  res.status(200).json({ received: true });
 }));
 
 module.exports = router;
