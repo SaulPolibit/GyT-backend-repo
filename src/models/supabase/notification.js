@@ -44,32 +44,44 @@ class Notification {
       const channelName = `notifications:user:${notification.userId}`;
       const channel = supabase.channel(channelName);
 
-      // Subscribe to channel first, then send broadcast
-      await new Promise((resolve, reject) => {
-        channel.subscribe((status) => {
-          if (status === 'SUBSCRIBED') {
-            channel.send({
-              type: 'broadcast',
-              event: 'new_notification',
-              payload: {
-                id: notification.id,
-                user_id: notification.userId,
-                notification_type: notification.notificationType,
-                title: notification.title,
-                message: notification.message,
-                created_at: notification.createdAt,
-              }
-            }).then(() => {
-              console.log('[Realtime] Broadcasted notification to user:', notification.userId);
-              // Unsubscribe after sending
+      // Subscribe to channel first, then send broadcast with timeout
+      const BROADCAST_TIMEOUT = 5000; // 5 second timeout
+
+      await Promise.race([
+        new Promise((resolve, reject) => {
+          channel.subscribe((status) => {
+            if (status === 'SUBSCRIBED') {
+              channel.send({
+                type: 'broadcast',
+                event: 'new_notification',
+                payload: {
+                  id: notification.id,
+                  user_id: notification.userId,
+                  notification_type: notification.notificationType,
+                  title: notification.title,
+                  message: notification.message,
+                  created_at: notification.createdAt,
+                }
+              }).then(() => {
+                console.log('[Realtime] Broadcasted notification to user:', notification.userId);
+                // Unsubscribe after sending
+                supabase.removeChannel(channel);
+                resolve();
+              }).catch(reject);
+            } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
               supabase.removeChannel(channel);
-              resolve();
-            }).catch(reject);
-          } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
-            reject(new Error(`Channel subscription failed: ${status}`));
-          }
-        });
-      });
+              reject(new Error(`Channel subscription failed: ${status}`));
+            }
+          });
+        }),
+        new Promise((resolve) => {
+          setTimeout(() => {
+            console.log('[Realtime] Broadcast timed out, continuing without realtime notification');
+            supabase.removeChannel(channel);
+            resolve();
+          }, BROADCAST_TIMEOUT);
+        })
+      ]);
     } catch (error) {
       console.error('[Realtime] Error broadcasting notification:', error.message);
     }
@@ -95,8 +107,9 @@ class Notification {
 
     const notification = this._toModel(data);
 
-    // Broadcast to user
-    await this._broadcastNotification(notification);
+    // Broadcast to user in background (fire-and-forget, don't block)
+    this._broadcastNotification(notification)
+      .catch(err => console.error('[Realtime] Error broadcasting:', err.message));
 
     return notification;
   }
@@ -120,12 +133,11 @@ class Notification {
 
     const notifications = data.map(item => this._toModel(item));
 
-    // Broadcast each notification to its user
-    for (const notification of notifications) {
-      await this._broadcastNotification(notification);
-    }
+    // Broadcast notifications in background (fire-and-forget, don't block)
+    Promise.all(notifications.map(n => this._broadcastNotification(n)))
+      .catch(err => console.error('[Realtime] Error in bulk broadcast:', err.message));
 
-    return data.map(item => this._toModel(item));
+    return notifications;
   }
 
   /**

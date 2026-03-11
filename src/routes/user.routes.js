@@ -5,52 +5,12 @@
 const express = require('express');
 const { authenticate, createToken } = require('../middleware/auth');
 const { catchAsync, validate } = require('../middleware/errorHandler');
-const { User, Notification, NotificationSettings } = require('../models/supabase');
+const { User } = require('../models/supabase');
 const { requireRootAccess, ROLES, getUserContext } = require('../middleware/rbac');
-const { validateInvestorCreation } = require('../services/subscriptionLimits.service');
-
-/**
- * Helper function to create security alert notification
- * @param {string} userId - User ID
- * @param {string} alertType - Type of security alert
- * @param {string} title - Notification title
- * @param {string} message - Notification message
- */
-async function createSecurityAlertNotification(userId, alertType, title, message) {
-  try {
-    // Check if user has security alerts enabled
-    const settings = await NotificationSettings.findByUserId(userId);
-
-    // Default to sending if no settings found or securityAlerts is enabled
-    const shouldSend = !settings || settings.securityAlerts !== false;
-
-    if (!shouldSend) {
-      console.log(`[Security Alert] User ${userId} has security alerts disabled, skipping notification`);
-      return;
-    }
-
-    await Notification.create({
-      userId,
-      notificationType: 'security_alert',
-      channel: 'portal',
-      title,
-      message,
-      priority: 'high',
-      metadata: {
-        alertType,
-        timestamp: new Date().toISOString()
-      }
-    });
-
-    console.log(`[Security Alert] Notification created for user ${userId}: ${alertType}`);
-  } catch (error) {
-    // Log error but don't fail the main operation
-    console.error('[Security Alert] Error creating notification:', error.message);
-  }
-}
 const { getSupabase } = require('../config/database');
 const { uploadProfileImage, uploadDocument } = require('../middleware/upload');
 const { uploadToSupabase, deleteFromSupabase } = require('../utils/fileUpload');
+const { createSecurityAlertNotification } = require('../utils/notificationHelper');
 
 const router = express.Router();
 
@@ -110,26 +70,6 @@ router.post('/register', authenticate, catchAsync(async (req, res) => {
       success: false,
       message: 'User with this email already exists'
     });
-  }
-
-  // Validate subscription limits for investor creation (role 3)
-  if (role === ROLES.INVESTOR) {
-    const creatorUserId = req.auth.userId || req.user.id;
-    const subscriptionValidation = await validateInvestorCreation(creatorUserId);
-    if (!subscriptionValidation.allowed) {
-      return res.status(403).json({
-        success: false,
-        error: 'SUBSCRIPTION_LIMIT_EXCEEDED',
-        message: subscriptionValidation.reason,
-        details: {
-          currentCount: subscriptionValidation.currentCount,
-          limit: subscriptionValidation.limit,
-          tier: subscriptionValidation.tier,
-          model: subscriptionValidation.model,
-          upgradeOption: subscriptionValidation.upgradeOption
-        }
-      });
-    }
   }
 
   // Create user in Supabase Auth using admin client to bypass email confirmation
@@ -388,6 +328,10 @@ router.get('/profile', authenticate, catchAsync(async (req, res) => {
       // Tax fields
       taxClassification: user.taxClassification,
       w9Form: user.w9Form,
+      // Bank Account Details (for distributions)
+      bankName: user.bankName,
+      bankAccountNumber: user.bankAccountNumber,
+      bankRoutingNumber: user.bankRoutingNumber,
     }
   });
 }));
@@ -440,7 +384,11 @@ router.put('/profile', authenticate, catchAsync(async (req, res) => {
     principalContact,
     assetsUnderManagement,
     // Tax fields
-    taxClassification
+    taxClassification,
+    // Bank Account Details (for distributions)
+    bankName,
+    bankAccountNumber,
+    bankRoutingNumber
   } = req.body;
 
   // Get user ID from authenticated token
@@ -522,6 +470,7 @@ router.put('/profile', authenticate, catchAsync(async (req, res) => {
 
     // Also update in users table for backward compatibility
     updateData.password = newPassword;
+    updateData._passwordChanged = true; // Flag to trigger notification
   }
 
   // Update other fields if provided and not empty
@@ -690,11 +639,27 @@ router.put('/profile', authenticate, catchAsync(async (req, res) => {
     updateData.taxClassification = taxClassification;
   }
 
+  // Bank Account Details (for distributions)
+  if (bankName !== undefined && bankName !== null) {
+    updateData.bankName = bankName;
+  }
+
+  if (bankAccountNumber !== undefined && bankAccountNumber !== null) {
+    updateData.bankAccountNumber = bankAccountNumber;
+  }
+
+  if (bankRoutingNumber !== undefined && bankRoutingNumber !== null) {
+    updateData.bankRoutingNumber = bankRoutingNumber;
+  }
+  // Check if password was changed for notification
+  const passwordChanged = updateData._passwordChanged;
+  delete updateData._passwordChanged; // Remove flag before saving
+
   // Update user in database
   const updatedUser = await User.findByIdAndUpdate(userId, updateData);
 
-  // If password was changed, send security alert notification
-  if (updateData.password) {
+  // Send security notification if password was changed
+  if (passwordChanged) {
     await createSecurityAlertNotification(
       userId,
       'password_changed',
@@ -759,6 +724,10 @@ router.put('/profile', authenticate, catchAsync(async (req, res) => {
       // Tax fields
       taxClassification: updatedUser.taxClassification,
       w9Form: updatedUser.w9Form,
+      // Bank Account Details (for distributions)
+      bankName: updatedUser.bankName,
+      bankAccountNumber: updatedUser.bankAccountNumber,
+      bankRoutingNumber: updatedUser.bankRoutingNumber,
     }
   });
 }));
@@ -1123,6 +1092,7 @@ router.get('/investors', authenticate, catchAsync(async (req, res) => {
       email: user.email,
       phoneNumber: user.phoneNumber,
       country: user.country,
+      kycId: user.kycId,
       kycStatus: user.kycStatus || 'Not Started',
       walletAddress: user.walletAddress,
       investorType: user.investorType || 'Individual',
@@ -1238,6 +1208,10 @@ router.get('/:id', authenticate, catchAsync(async (req, res) => {
       // Tax fields
       taxClassification: user.taxClassification,
       w9Form: user.w9Form,
+      // Bank Account Details (for distributions)
+      bankName: user.bankName,
+      bankAccountNumber: user.bankAccountNumber,
+      bankRoutingNumber: user.bankRoutingNumber,
       // Timestamps
       lastLogin: user.lastLogin,
       createdAt: user.createdAt,

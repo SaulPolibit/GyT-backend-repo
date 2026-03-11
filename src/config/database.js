@@ -68,7 +68,6 @@ const getSupabase = () => {
     const keyType = serviceRoleKey ? 'SERVICE_ROLE' : (anonKey ? 'ANON' : 'NONE');
     console.log(`[Supabase] Key type being used: ${keyType}`);
     console.log(`[Supabase] SERVICE_ROLE_KEY present: ${!!serviceRoleKey}`);
-    console.log(`[Supabase] Key starts with: ${supabaseKey?.substring(0, 20)}...`);
 
     if (!supabaseUrl || !supabaseKey) {
       throw new Error('Missing Supabase credentials. Please check SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY environment variables.');

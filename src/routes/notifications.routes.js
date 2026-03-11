@@ -137,7 +137,8 @@ router.put('/settings', authenticate, catchAsync(async (req, res) => {
     'paymentConfirmations',
     'quarterlyReports',
     'securityAlerts',
-    'urgentCapitalCalls'
+    'urgentCapitalCalls',
+    'newStructureNotifications'
   ];
 
   const updates = {};
@@ -233,43 +234,32 @@ router.delete('/settings', authenticate, catchAsync(async (req, res) => {
   });
 }));
 
-// ============================================================================
+// ==========================================
 // NOTIFICATION INBOX ROUTES
-// ============================================================================
+// ==========================================
 
 /**
  * @route   GET /api/notifications
- * @desc    Get user's notifications (inbox)
+ * @desc    Get user's notifications
  * @access  Private (requires Bearer token)
+ * @query   limit, offset, unreadOnly, channel, type
  */
 router.get('/', authenticate, catchAsync(async (req, res) => {
   const userId = req.auth.userId || req.user.id;
+  const { limit = 50, offset = 0, unreadOnly = false, channel, type } = req.query;
 
-  validate(userId, 'User ID is required');
-
-  // Parse query parameters
-  const options = {
-    status: req.query.status,
-    channel: req.query.channel,
-    notificationType: req.query.type,
-    unreadOnly: req.query.unread === 'true',
-    limit: parseInt(req.query.limit) || 50,
-    offset: parseInt(req.query.offset) || 0,
-    orderBy: req.query.orderBy || 'created_at',
-    ascending: req.query.order === 'asc'
-  };
-
-  const notifications = await Notification.findByUserId(userId, options);
+  const notifications = await Notification.findByUserId(userId, {
+    limit: parseInt(limit),
+    offset: parseInt(offset),
+    unreadOnly: unreadOnly === 'true' || unreadOnly === true,
+    channel,
+    type
+  });
 
   res.status(200).json({
     success: true,
-    message: 'Notifications retrieved successfully',
     data: notifications,
-    pagination: {
-      limit: options.limit,
-      offset: options.offset,
-      count: notifications.length
-    }
+    count: notifications.length
   });
 }));
 
@@ -281,26 +271,30 @@ router.get('/', authenticate, catchAsync(async (req, res) => {
 router.get('/unread-count', authenticate, catchAsync(async (req, res) => {
   const userId = req.auth.userId || req.user.id;
 
-  validate(userId, 'User ID is required');
-
   const count = await Notification.getUnreadCount(userId);
 
   res.status(200).json({
     success: true,
-    data: { count }
+    count
   });
 }));
 
 /**
  * @route   GET /api/notifications/:id
- * @desc    Get a specific notification by ID
+ * @desc    Get single notification by ID
  * @access  Private (requires Bearer token)
  */
 router.get('/:id', authenticate, catchAsync(async (req, res) => {
   const userId = req.auth.userId || req.user.id;
   const { id } = req.params;
 
-  validate(id, 'Notification ID is required');
+  // Validate UUID format
+  if (id === 'settings' || id === 'unread-count' || id === 'read-all') {
+    return res.status(400).json({
+      success: false,
+      message: 'Invalid notification ID'
+    });
+  }
 
   const notification = await Notification.findById(id);
 
@@ -311,7 +305,7 @@ router.get('/:id', authenticate, catchAsync(async (req, res) => {
     });
   }
 
-  // Verify notification belongs to user
+  // Check if user owns the notification
   if (notification.userId !== userId) {
     return res.status(403).json({
       success: false,
@@ -327,11 +321,12 @@ router.get('/:id', authenticate, catchAsync(async (req, res) => {
 
 /**
  * @route   POST /api/notifications
- * @desc    Create a new notification (Admin/System only)
- * @access  Private (Root and Admin only)
+ * @desc    Create a notification (Admin only)
+ * @access  Private (Root/Admin only)
  */
 router.post('/', authenticate, catchAsync(async (req, res) => {
   const { userRole } = getUserContext(req);
+  const senderId = req.auth.userId || req.user.id;
 
   // Only ROOT and ADMIN can create notifications
   if (userRole !== ROLES.ROOT && userRole !== ROLES.ADMIN) {
@@ -341,19 +336,18 @@ router.post('/', authenticate, catchAsync(async (req, res) => {
     });
   }
 
-  const senderId = req.auth.userId || req.user.id;
-
   const {
     userId,
     notificationType,
-    channel,
+    channel = 'portal',
     title,
     message,
-    priority,
+    priority = 'normal',
     relatedEntityType,
     relatedEntityId,
     metadata,
     actionUrl,
+    senderName,
     emailSubject,
     emailTemplate,
     expiresAt
@@ -364,42 +358,19 @@ router.post('/', authenticate, catchAsync(async (req, res) => {
   validate(title, 'Title is required');
   validate(message, 'Message is required');
 
-  // Validate notification type
-  if (!Notification.TYPES.includes(notificationType)) {
-    return res.status(400).json({
-      success: false,
-      message: `Invalid notification type. Must be one of: ${Notification.TYPES.join(', ')}`
-    });
-  }
-
-  // Validate channel if provided
-  if (channel && !Notification.CHANNELS.includes(channel)) {
-    return res.status(400).json({
-      success: false,
-      message: `Invalid channel. Must be one of: ${Notification.CHANNELS.join(', ')}`
-    });
-  }
-
-  // Validate priority if provided
-  if (priority && !Notification.PRIORITIES.includes(priority)) {
-    return res.status(400).json({
-      success: false,
-      message: `Invalid priority. Must be one of: ${Notification.PRIORITIES.join(', ')}`
-    });
-  }
-
   const notification = await Notification.create({
     userId,
     notificationType,
-    channel: channel || 'portal',
+    channel,
     title,
     message,
-    priority: priority || 'normal',
+    priority,
     relatedEntityType,
     relatedEntityId,
     metadata,
     actionUrl,
     senderId,
+    senderName,
     emailSubject,
     emailTemplate,
     expiresAt
@@ -414,11 +385,12 @@ router.post('/', authenticate, catchAsync(async (req, res) => {
 
 /**
  * @route   POST /api/notifications/bulk
- * @desc    Create multiple notifications (Admin/System only)
- * @access  Private (Root and Admin only)
+ * @desc    Create multiple notifications (Admin only)
+ * @access  Private (Root/Admin only)
  */
 router.post('/bulk', authenticate, catchAsync(async (req, res) => {
   const { userRole } = getUserContext(req);
+  const senderId = req.auth.userId || req.user.id;
 
   // Only ROOT and ADMIN can create notifications
   if (userRole !== ROLES.ROOT && userRole !== ROLES.ADMIN) {
@@ -428,47 +400,44 @@ router.post('/bulk', authenticate, catchAsync(async (req, res) => {
     });
   }
 
-  const senderId = req.auth.userId || req.user.id;
-  const { notifications } = req.body;
+  const { notifications: notificationsData } = req.body;
 
-  validate(notifications, 'Notifications array is required');
+  validate(notificationsData, 'Notifications array is required');
+  validate(Array.isArray(notificationsData), 'Notifications must be an array');
 
-  if (!Array.isArray(notifications) || notifications.length === 0) {
-    return res.status(400).json({
-      success: false,
-      message: 'Notifications must be a non-empty array'
-    });
-  }
-
-  // Add sender to each notification
-  const notificationsWithSender = notifications.map(n => ({
+  // Add senderId to all notifications
+  const dataWithSender = notificationsData.map(n => ({
     ...n,
-    senderId,
-    channel: n.channel || 'portal',
-    priority: n.priority || 'normal'
+    senderId: n.senderId || senderId
   }));
 
-  const createdNotifications = await Notification.createMany(notificationsWithSender);
+  const notifications = await Notification.createMany(dataWithSender);
 
   res.status(201).json({
     success: true,
-    message: `${createdNotifications.length} notifications created successfully`,
-    data: createdNotifications
+    message: `${notifications.length} notifications created successfully`,
+    data: notifications,
+    count: notifications.length
   });
 }));
 
 /**
  * @route   PUT /api/notifications/:id/read
- * @desc    Mark a notification as read
+ * @desc    Mark notification as read
  * @access  Private (requires Bearer token)
  */
 router.put('/:id/read', authenticate, catchAsync(async (req, res) => {
   const userId = req.auth.userId || req.user.id;
   const { id } = req.params;
 
-  validate(id, 'Notification ID is required');
-
   const notification = await Notification.markAsRead(id, userId);
+
+  if (!notification) {
+    return res.status(404).json({
+      success: false,
+      message: 'Notification not found or already read'
+    });
+  }
 
   res.status(200).json({
     success: true,
@@ -485,13 +454,12 @@ router.put('/:id/read', authenticate, catchAsync(async (req, res) => {
 router.put('/read-all', authenticate, catchAsync(async (req, res) => {
   const userId = req.auth.userId || req.user.id;
 
-  validate(userId, 'User ID is required');
-
   const count = await Notification.markAllAsRead(userId);
 
   res.status(200).json({
     success: true,
-    message: `${count} notifications marked as read`
+    message: `${count} notifications marked as read`,
+    count
   });
 }));
 
@@ -504,26 +472,15 @@ router.delete('/:id', authenticate, catchAsync(async (req, res) => {
   const userId = req.auth.userId || req.user.id;
   const { id } = req.params;
 
-  validate(id, 'Notification ID is required');
-
-  // First verify notification belongs to user
-  const notification = await Notification.findById(id);
-
-  if (!notification) {
-    return res.status(404).json({
+  // Don't delete settings routes
+  if (id === 'settings') {
+    return res.status(400).json({
       success: false,
-      message: 'Notification not found'
+      message: 'Invalid notification ID'
     });
   }
 
-  if (notification.userId !== userId) {
-    return res.status(403).json({
-      success: false,
-      message: 'Access denied'
-    });
-  }
-
-  await Notification.findByIdAndDelete(id);
+  await Notification.delete(id, userId);
 
   res.status(200).json({
     success: true,
@@ -534,11 +491,13 @@ router.delete('/:id', authenticate, catchAsync(async (req, res) => {
 /**
  * @route   DELETE /api/notifications/cleanup/old
  * @desc    Delete old read notifications (Admin only)
- * @access  Private (Root and Admin only)
+ * @access  Private (Root/Admin only)
+ * @query   daysOld - Delete notifications older than this many days (default: 30)
  */
 router.delete('/cleanup/old', authenticate, catchAsync(async (req, res) => {
   const { userRole } = getUserContext(req);
 
+  // Only ROOT and ADMIN can cleanup
   if (userRole !== ROLES.ROOT && userRole !== ROLES.ADMIN) {
     return res.status(403).json({
       success: false,
@@ -546,23 +505,26 @@ router.delete('/cleanup/old', authenticate, catchAsync(async (req, res) => {
     });
   }
 
-  const daysOld = parseInt(req.query.days) || 30;
-  const count = await Notification.deleteOldRead(daysOld);
+  const { daysOld = 30 } = req.query;
+
+  const count = await Notification.deleteOldRead(parseInt(daysOld));
 
   res.status(200).json({
     success: true,
-    message: `${count} old notifications deleted`
+    message: `${count} old notifications deleted`,
+    count
   });
 }));
 
 /**
  * @route   DELETE /api/notifications/cleanup/expired
  * @desc    Delete expired notifications (Admin only)
- * @access  Private (Root and Admin only)
+ * @access  Private (Root/Admin only)
  */
 router.delete('/cleanup/expired', authenticate, catchAsync(async (req, res) => {
   const { userRole } = getUserContext(req);
 
+  // Only ROOT and ADMIN can cleanup
   if (userRole !== ROLES.ROOT && userRole !== ROLES.ADMIN) {
     return res.status(403).json({
       success: false,
@@ -574,26 +536,28 @@ router.delete('/cleanup/expired', authenticate, catchAsync(async (req, res) => {
 
   res.status(200).json({
     success: true,
-    message: `${count} expired notifications deleted`
+    message: `${count} expired notifications deleted`,
+    count
   });
 }));
 
-// ============================================================================
-// BULK NOTIFICATION ROUTES (Quarterly Reports, K-1 Forms, Announcements)
-// ============================================================================
+// ==========================================
+// BULK NOTIFICATION SENDING ROUTES
+// ==========================================
 
 /**
  * @route   POST /api/notifications/send/quarterly-report
  * @desc    Send quarterly report notification to all investors in a structure
- * @access  Private (Root and Admin only)
+ * @access  Private (Root/Admin only)
  */
 router.post('/send/quarterly-report', authenticate, catchAsync(async (req, res) => {
-  const { userRole, userId } = getUserContext(req);
+  const { userId, userRole } = getUserContext(req);
 
+  // Only ROOT and ADMIN can send bulk notifications
   if (userRole !== ROLES.ROOT && userRole !== ROLES.ADMIN) {
     return res.status(403).json({
       success: false,
-      message: 'Unauthorized: Only Root and Admin users can send quarterly report notifications'
+      message: 'Unauthorized: Only Root and Admin users can send bulk notifications'
     });
   }
 
@@ -630,16 +594,17 @@ router.post('/send/quarterly-report', authenticate, catchAsync(async (req, res) 
 
 /**
  * @route   POST /api/notifications/send/k1-tax-form
- * @desc    Send K-1 tax form available notification to all investors in a structure
- * @access  Private (Root and Admin only)
+ * @desc    Send K-1 tax form notification to all investors in a structure
+ * @access  Private (Root/Admin only)
  */
 router.post('/send/k1-tax-form', authenticate, catchAsync(async (req, res) => {
-  const { userRole, userId } = getUserContext(req);
+  const { userId, userRole } = getUserContext(req);
 
+  // Only ROOT and ADMIN can send bulk notifications
   if (userRole !== ROLES.ROOT && userRole !== ROLES.ADMIN) {
     return res.status(403).json({
       success: false,
-      message: 'Unauthorized: Only Root and Admin users can send K-1 tax form notifications'
+      message: 'Unauthorized: Only Root and Admin users can send bulk notifications'
     });
   }
 
@@ -674,28 +639,28 @@ router.post('/send/k1-tax-form', authenticate, catchAsync(async (req, res) => {
 /**
  * @route   POST /api/notifications/send/announcement
  * @desc    Send general announcement to investors (structure-wide or specific users)
- * @access  Private (Root and Admin only)
+ * @access  Private (Root/Admin only)
  */
 router.post('/send/announcement', authenticate, catchAsync(async (req, res) => {
-  const { userRole, userId } = getUserContext(req);
+  const { userId, userRole } = getUserContext(req);
 
+  // Only ROOT and ADMIN can send bulk notifications
   if (userRole !== ROLES.ROOT && userRole !== ROLES.ADMIN) {
     return res.status(403).json({
       success: false,
-      message: 'Unauthorized: Only Root and Admin users can send announcements'
+      message: 'Unauthorized: Only Root and Admin users can send bulk notifications'
     });
   }
 
-  const { title, message, structureId, priority, actionUrl, userIds } = req.body;
+  const { structureId, userIds, title, message, priority, actionUrl } = req.body;
 
-  validate(title, 'Announcement title is required');
-  validate(message, 'Announcement message is required');
-  validate(structureId || (userIds && userIds.length > 0), 'Either structureId or userIds must be provided');
+  validate(title, 'Title is required');
+  validate(message, 'Message is required');
+  validate(structureId || (userIds && userIds.length > 0), 'Either structureId or userIds is required');
 
   let structure = null;
-
-  // If structureId provided, validate it
   if (structureId) {
+    // Validate structure exists
     structure = await Structure.findById(structureId);
     validate(structure, 'Structure not found');
 

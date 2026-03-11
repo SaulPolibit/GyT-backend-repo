@@ -1945,11 +1945,8 @@ router.post('/contract/mint-tokens', authenticate, catchAsync(async (req, res) =
     const account = web3.eth.accounts.privateKeyToAccount(formattedPrivateKey);
     web3.eth.accounts.wallet.add(account);
 
-    // Log the minting account address for debugging
-    console.log('Minting account address:', account.address);
-    console.log('Contract address:', contractAddress);
-    console.log('Target user address:', userAddress);
-    console.log('Amount to mint:', parsedAmount);
+    // Minting operation initiated
+    console.log('[Blockchain] Minting operation initiated, amount:', parsedAmount);
 
     // Check if the minting account has permission (owner or AGENT_ROLE)
     let hasPermission = false;
@@ -1961,7 +1958,6 @@ router.post('/contract/mint-tokens', authenticate, catchAsync(async (req, res) =
     try {
       // First, try to check if account is the owner
       const contractOwner = await contract.methods.owner().call();
-      console.log('Contract owner address:', contractOwner);
       permissionDetails.contractOwner = contractOwner;
 
       if (contractOwner.toLowerCase() === account.address.toLowerCase()) {

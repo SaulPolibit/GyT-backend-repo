@@ -103,6 +103,19 @@ router.get('/unread/count', authenticate, catchAsync(async (req, res) => {
 }));
 
 /**
+ * @route   GET /api/conversations/health
+ * @desc    Health check for Conversation API routes
+ * @access  Public
+ */
+router.get('/health', (_req, res) => {
+  res.json({
+    service: 'Conversation API',
+    status: 'operational',
+    timestamp: new Date().toISOString()
+  });
+});
+
+/**
  * @route   GET /api/conversations/:id
  * @desc    Get single conversation by ID
  * @access  Private (requires authentication)
@@ -306,18 +319,5 @@ router.delete('/:id', authenticate, catchAsync(async (req, res) => {
     message: 'Conversation deleted successfully'
   });
 }));
-
-/**
- * @route   GET /api/conversations/health
- * @desc    Health check for Conversation API routes
- * @access  Public
- */
-router.get('/health', (_req, res) => {
-  res.json({
-    service: 'Conversation API',
-    status: 'operational',
-    timestamp: new Date().toISOString()
-  });
-});
 
 module.exports = router;

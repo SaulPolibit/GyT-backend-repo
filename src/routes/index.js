@@ -48,6 +48,18 @@ const firmSettingsRoutes = require('./firmSettings.routes');
 // Presence System routes
 const presenceRoutes = require('./presence.routes');
 
+// Capital Account routes
+const capitalAccountRoutes = require('./capitalAccount.routes');
+
+// Drawdown Notice Template routes
+const drawdownNoticeTemplateRoutes = require('./drawdownNoticeTemplate.routes');
+
+// Fee Report routes
+const feeReportRoutes = require('./feeReport.routes');
+
+// ILPA Report routes
+const ilpaReportRoutes = require('./ilpaReport.routes');
+
 const router = express.Router();
 
 // Mount route modules
@@ -101,6 +113,18 @@ router.use('/firm-settings', firmSettingsRoutes);
 // Mount Presence System routes
 router.use('/presence', presenceRoutes);
 
+// Mount Capital Account routes
+router.use('/capital-accounts', capitalAccountRoutes);
+
+// Mount Drawdown Notice Template routes
+router.use('/drawdown-templates', drawdownNoticeTemplateRoutes);
+
+// Mount Fee Report routes
+router.use('/fee-reports', feeReportRoutes);
+
+// Mount ILPA Report routes
+router.use('/ilpa-reports', ilpaReportRoutes);
+
 // Root API endpoint
 router.get('/', (_req, res) => {
   res.json({
@@ -147,6 +171,14 @@ router.get('/', (_req, res) => {
       firmSettings: '/api/firm-settings',
       // Presence System endpoints
       presence: '/api/presence',
+      // Capital Account endpoints
+      capitalAccounts: '/api/capital-accounts',
+      // Drawdown Notice Template endpoints
+      drawdownTemplates: '/api/drawdown-templates',
+      // Fee Report endpoints
+      feeReports: '/api/fee-reports',
+      // ILPA Report endpoints
+      ilpaReports: '/api/ilpa-reports',
     },
   });
 });

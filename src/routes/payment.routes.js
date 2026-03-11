@@ -9,9 +9,106 @@ const { catchAsync, validate } = require('../middleware/errorHandler');
 const { handleDocumentUpload } = require('../middleware/upload');
 const { uploadToSupabase } = require('../utils/fileUpload');
 const Payment = require('../models/supabase/payment');
-const { Structure, User, Notification, NotificationSettings } = require('../models/supabase');
-const SmartContract = require('../models/supabase/smartContract');
+const { Structure, User, StructureInvestor, CapitalCall, Notification, NotificationSettings } = require('../models/supabase');
 const { requireInvestmentManagerAccess, getUserContext, ROLES } = require('../middleware/rbac');
+
+const router = express.Router();
+
+/**
+ * Helper function to get or create structure investor record for a user+structure combination
+ * Used when capital commitments are made through the marketplace
+ */
+async function getOrCreateStructureInvestor(userId, structureId, commitment) {
+  try {
+    // Check if structure investor record already exists for this user+structure
+    const existingRecord = await StructureInvestor.findByUserAndStructure(userId, structureId);
+
+    if (existingRecord) {
+      // Update existing record's commitment (add to existing)
+      const newCommitment = (existingRecord.commitment || 0) + commitment;
+
+      const updatedRecord = await StructureInvestor.findByIdAndUpdate(existingRecord.id, {
+        commitment: newCommitment
+      });
+
+      console.log(`[Payment] Updated structure investor ${existingRecord.id} commitment to ${newCommitment}`);
+
+      // Recalculate ownership percentages for all investors in this structure
+      await StructureInvestor.recalculateOwnership(structureId);
+
+      return updatedRecord;
+    }
+
+    // Create new structure investor record
+    const newRecord = await StructureInvestor.create({
+      userId,
+      structureId,
+      commitment,
+      ownershipPercent: 0, // Will be recalculated
+      status: 'active'
+    });
+
+    console.log(`[Payment] Created structure investor ${newRecord.id} for user ${userId} in structure ${structureId}`);
+
+    // Recalculate ownership percentages for all investors in this structure
+    await StructureInvestor.recalculateOwnership(structureId);
+
+    return newRecord;
+  } catch (error) {
+    console.error('[Payment] Error in getOrCreateStructureInvestor:', error.message);
+    // Don't throw - structure investor creation is supplementary to payment
+    return null;
+  }
+}
+
+/**
+ * Helper function to get structure investor data for a user+structure combination
+ */
+async function getStructureInvestorForUser(userId, structureId) {
+  try {
+    return await StructureInvestor.findByUserAndStructure(userId, structureId);
+  } catch (error) {
+    console.error('[Payment] Error fetching structure investor:', error.message);
+    return null;
+  }
+}
+
+/**
+ * Helper function to get capital call data for a user in a structure
+ * Note: Capital call allocations use user_id (not investor_id) after the migration
+ */
+async function getCapitalCallDataForInvestor(userId, structureId) {
+  try {
+    const capitalCalls = await CapitalCall.findByStructureId(structureId);
+
+    let totalCalled = 0;
+    let totalPaid = 0;
+
+    for (const call of capitalCalls) {
+      if (call.status === 'Draft' || call.status === 'Cancelled') continue;
+
+      // Look for allocation by userId (new) or investorId (legacy)
+      const allocation = call.investorAllocations?.find(
+        alloc => alloc.userId === userId || alloc.investorId === userId
+      );
+
+      if (allocation) {
+        totalCalled += allocation.allocatedAmount || 0;
+        totalPaid += allocation.amountPaid || 0;
+      }
+    }
+
+    return {
+      totalCalled,
+      totalPaid,
+      totalUnpaid: totalCalled - totalPaid,
+      callCount: capitalCalls.filter(cc => cc.status !== 'Draft' && cc.status !== 'Cancelled').length
+    };
+  } catch (error) {
+    console.error('[Payment] Error fetching capital call data:', error.message);
+    return { totalCalled: 0, totalPaid: 0, totalUnpaid: 0, callCount: 0 };
+  }
+}
 
 /**
  * Helper function to create payment confirmation notification
@@ -27,7 +124,7 @@ async function createPaymentConfirmationNotification(payment, status) {
 
     // Check if user has payment confirmations enabled
     const settings = await NotificationSettings.findByUserId(payment.userId);
-    // Default to sending if no settings found or paymentConfirmations is enabled
+    // Default to sending if no settings found or paymentConfirmations is not explicitly false
     const shouldNotify = !settings || settings.paymentConfirmations !== false;
 
     if (!shouldNotify) {
@@ -41,7 +138,7 @@ async function createPaymentConfirmationNotification(payment, status) {
       try {
         const structure = await Structure.findById(payment.structureId);
         if (structure) {
-          structureName = structure.name || structure.title || 'your investment';
+          structureName = structure.name || 'your investment';
         }
       } catch (err) {
         console.log('[Payment] Could not fetch structure name:', err.message);
@@ -59,7 +156,7 @@ async function createPaymentConfirmationNotification(payment, status) {
       priority: 'normal',
       relatedEntityType: 'payment',
       relatedEntityId: payment.id,
-      actionUrl: '/lp-portal/payments',
+      actionUrl: '/lp-portal/portfolio',
       metadata: {
         paymentId: payment.id,
         amount: payment.amount,
@@ -74,8 +171,6 @@ async function createPaymentConfirmationNotification(payment, status) {
     console.error('[Payment] Error creating notification:', error.message);
   }
 }
-
-const router = express.Router();
 
 /**
  * @route   GET /api/payments/health
@@ -92,7 +187,7 @@ router.get('/health', (_req, res) => {
 
 /**
  * @route   GET /api/payments/me
- * @desc    Get all payments for the authenticated user with structure details
+ * @desc    Get all payments for the authenticated user with structure and investor details
  * @access  Private (requires authentication)
  */
 router.get('/me', authenticate, catchAsync(async (req, res) => {
@@ -101,16 +196,26 @@ router.get('/me', authenticate, catchAsync(async (req, res) => {
   // Get all payments for the current user
   const payments = await Payment.find({ userId });
 
-  // Attach structure details to each payment
-  const paymentsWithStructures = await Promise.all(
+  // Attach structure, investor, and capital call details to each payment
+  const paymentsWithDetails = await Promise.all(
     payments.map(async (payment) => {
       let structure = null;
+      let investor = null;
+      let capitalCallData = null;
 
       if (payment.structureId) {
         try {
           structure = await Structure.findById(payment.structureId);
         } catch (error) {
           console.error(`Error fetching structure ${payment.structureId}:`, error.message);
+        }
+
+        // Get structure investor record for this user+structure
+        investor = await getStructureInvestorForUser(userId, payment.structureId);
+
+        // If structure investor exists, get capital call data
+        if (investor) {
+          capitalCallData = await getCapitalCallDataForInvestor(investor.userId, payment.structureId);
         }
       }
 
@@ -124,15 +229,95 @@ router.get('/me', authenticate, catchAsync(async (req, res) => {
           baseCurrency: structure.baseCurrency,
           description: structure.description,
           bannerImage: structure.bannerImage,
-        } : null
+          totalCommitment: structure.totalCommitment,
+          enableCapitalCalls: structure.enableCapitalCalls,
+        } : null,
+        investor: investor ? {
+          id: investor.id,
+          commitment: investor.commitment,
+          ownershipPercent: investor.ownershipPercent,
+          kycStatus: investor.kycStatus,
+          investorType: investor.investorType,
+        } : null,
+        capitalCallData: capitalCallData
       };
     })
   );
 
   res.status(200).json({
     success: true,
-    count: paymentsWithStructures.length,
-    data: paymentsWithStructures
+    count: paymentsWithDetails.length,
+    data: paymentsWithDetails
+  });
+}));
+
+/**
+ * @route   GET /api/payments/check-commitment/:structureId
+ * @desc    Check if the authenticated user has an existing capital commitment for a structure
+ * @access  Private (requires authentication)
+ */
+router.get('/check-commitment/:structureId', authenticate, catchAsync(async (req, res) => {
+  const userId = req.auth.userId || req.user.id;
+  const { structureId } = req.params;
+
+  if (!structureId) {
+    return res.status(400).json({
+      success: false,
+      message: 'Structure ID is required'
+    });
+  }
+
+  // Check if structure exists and has capital calls enabled
+  const structure = await Structure.findById(structureId);
+
+  if (!structure) {
+    return res.status(404).json({
+      success: false,
+      message: 'Structure not found'
+    });
+  }
+
+  // If structure doesn't have capital calls enabled, no restriction applies
+  if (!structure.enableCapitalCalls) {
+    return res.status(200).json({
+      success: true,
+      hasExistingCommitment: false,
+      capitalCallsEnabled: false,
+      message: 'This structure does not use capital calls'
+    });
+  }
+
+  // Check for existing capital commitment (pending or approved)
+  const existingCommitments = await Payment.find({
+    userId: userId,
+    structureId: structureId,
+    paymentMethod: 'capital-commitment'
+  });
+
+  // Filter to only non-rejected commitments
+  const activeCommitment = existingCommitments.find(c => c.status !== 'rejected');
+
+  if (activeCommitment) {
+    return res.status(200).json({
+      success: true,
+      hasExistingCommitment: true,
+      capitalCallsEnabled: true,
+      commitment: {
+        id: activeCommitment.id,
+        amount: activeCommitment.amount,
+        tokens: activeCommitment.tokens,
+        status: activeCommitment.status,
+        createdAt: activeCommitment.createdAt
+      },
+      message: 'You already have a capital commitment for this structure'
+    });
+  }
+
+  return res.status(200).json({
+    success: true,
+    hasExistingCommitment: false,
+    capitalCallsEnabled: true,
+    message: 'No existing commitment found'
   });
 }));
 
@@ -170,7 +355,66 @@ router.post('/', authenticate, handleDocumentUpload, catchAsync(async (req, res)
   validate(email, 'Email is required');
   validate(amount, 'Amount is required');
   validate(structureId, 'Structure ID is required');
-  // contractId is optional - contract model not fully implemented yet
+
+  // contractId is required except for capital commitments
+  const isCapitalCommitment = paymentMethod === 'capital-commitment';
+  if (!isCapitalCommitment) {
+    validate(contractId, 'Contract ID is required');
+  }
+
+  // Get authenticated user ID
+  const userId = req.auth?.userId || req.user?.id;
+
+  // For capital commitments, check if user already has a commitment for this structure
+  if (isCapitalCommitment && userId && structureId) {
+    // Check if structure has capital calls enabled
+    const structure = await Structure.findById(structureId.trim());
+
+    if (structure && structure.enableCapitalCalls) {
+      // Check for existing capital commitment (pending or approved)
+      const existingCommitments = await Payment.find({
+        userId: userId,
+        structureId: structureId.trim(),
+        paymentMethod: 'capital-commitment'
+      });
+
+      // Filter to only non-rejected commitments
+      const activeCommitment = existingCommitments.find(c => c.status !== 'rejected');
+
+      if (activeCommitment) {
+        return res.status(400).json({
+          success: false,
+          message: 'You have already made a capital commitment to this fund. Only one commitment per investor is allowed.',
+          existingCommitment: {
+            id: activeCommitment.id,
+            amount: activeCommitment.amount,
+            status: activeCommitment.status,
+            createdAt: activeCommitment.createdAt
+          }
+        });
+      }
+    }
+  }
+
+  // Check max investor restriction before allowing new investors
+  if (userId && structureId) {
+    const structureForCheck = await Structure.findById(structureId.trim());
+    if (structureForCheck && structureForCheck.maxInvestorRestriction) {
+      const currentInvestorCount = await Structure.getInvestorCount(structureId.trim());
+      if (currentInvestorCount >= structureForCheck.maxInvestorRestriction) {
+        // Check if user is already an investor in this structure
+        const existingInvestor = await StructureInvestor.findByUserAndStructure(userId, structureId.trim());
+        if (!existingInvestor) {
+          return res.status(403).json({
+            success: false,
+            message: 'This structure has reached its maximum number of investors allowed by regulation.',
+            maxInvestorRestriction: structureForCheck.maxInvestorRestriction,
+            currentInvestors: currentInvestorCount
+          });
+        }
+      }
+    }
+  }
 
   // Generate submission ID if not provided
   const finalSubmissionId = submissionId?.trim() || `PAY-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
@@ -189,26 +433,6 @@ router.post('/', authenticate, handleDocumentUpload, catchAsync(async (req, res)
     paymentImageUrl = uploadResult.publicUrl;
   }
 
-  // Get authenticated user ID
-  const userId = req.auth?.userId || req.user?.id;
-
-  // Automatically link to smart contract if it exists for this structure
-  let finalContractId = contractId?.trim() || null;
-  if (!finalContractId) {
-    try {
-      const smartContract = await SmartContract.findOne({ structureId: structureId.trim() });
-      if (smartContract) {
-        finalContractId = smartContract.id;
-        console.log(`[Payment] Auto-linked to smart contract: ${finalContractId}`);
-      } else {
-        console.log(`[Payment] No smart contract found for structure: ${structureId.trim()}`);
-      }
-    } catch (error) {
-      console.error(`[Payment] Error fetching smart contract for structure ${structureId}:`, error.message);
-      // Continue without contract link - payment can still be created
-    }
-  }
-
   // Create payment data
   const paymentData = {
     email: email.trim().toLowerCase(),
@@ -218,7 +442,7 @@ router.post('/', authenticate, handleDocumentUpload, catchAsync(async (req, res)
     mintTransactionHash: mintTransactionHash?.trim() || null,
     amount: amount.trim(),
     structureId: structureId.trim(),
-    contractId: finalContractId, // Auto-linked to smart contract if exists
+    contractId: contractId?.trim() || null, // Optional for capital commitments
     status: status?.trim() || 'pending',
     tokenId: tokenId?.trim() || null,
     tokens: tokens ? parseInt(tokens, 10) : null,
@@ -229,16 +453,30 @@ router.post('/', authenticate, handleDocumentUpload, catchAsync(async (req, res)
 
   const payment = await Payment.create(paymentData);
 
-  // If payment is created with approved/completed status (e.g., crypto payments), send notification
-  const confirmedStatuses = ['approved', 'completed'];
-  if (confirmedStatuses.includes(payment.status)) {
-    await createPaymentConfirmationNotification(payment, payment.status);
+  // Create or update structure investor record for capital commitment tracking
+  let structureInvestor = null;
+  if (userId && structureId && amount) {
+    const commitmentAmount = parseFloat(amount) || 0;
+    if (commitmentAmount > 0) {
+      structureInvestor = await getOrCreateStructureInvestor(
+        userId,
+        structureId.trim(),
+        commitmentAmount
+      );
+    }
   }
 
   res.status(201).json({
     success: true,
     message: 'Payment created successfully',
-    data: payment
+    data: {
+      ...payment,
+      investor: structureInvestor ? {
+        id: structureInvestor.id,
+        commitment: structureInvestor.commitment,
+        ownershipPercent: structureInvestor.ownershipPercent,
+      } : null
+    }
   });
 }));
 
@@ -445,19 +683,60 @@ router.get('/status/:status', authenticate, catchAsync(async (req, res) => {
 
 /**
  * @route   GET /api/payments/:id
- * @desc    Get a single payment by ID
+ * @desc    Get a single payment by ID with investor and capital call details
  * @access  Private (requires authentication)
  */
 router.get('/:id', authenticate, catchAsync(async (req, res) => {
   const { id } = req.params;
+  const userId = req.auth.userId || req.user.id;
 
   const payment = await Payment.findById(id);
 
   validate(payment, 'Payment not found');
 
+  let structure = null;
+  let investor = null;
+  let capitalCallData = null;
+
+  if (payment.structureId) {
+    try {
+      structure = await Structure.findById(payment.structureId);
+    } catch (error) {
+      console.error(`Error fetching structure ${payment.structureId}:`, error.message);
+    }
+
+    // Get structure investor record for this user+structure
+    investor = await getStructureInvestorForUser(userId, payment.structureId);
+
+    // If structure investor exists, get capital call data
+    if (investor) {
+      capitalCallData = await getCapitalCallDataForInvestor(investor.userId, payment.structureId);
+    }
+  }
+
   res.status(200).json({
     success: true,
-    data: payment
+    data: {
+      ...payment,
+      structure: structure ? {
+        id: structure.id,
+        name: structure.name,
+        type: structure.type,
+        status: structure.status,
+        baseCurrency: structure.baseCurrency,
+        description: structure.description,
+        bannerImage: structure.bannerImage,
+        totalCommitment: structure.totalCommitment,
+        enableCapitalCalls: structure.enableCapitalCalls,
+      } : null,
+      investor: investor ? {
+        id: investor.id,
+        commitment: investor.commitment,
+        ownershipPercent: investor.ownershipPercent,
+        status: investor.status,
+      } : null,
+      capitalCallData: capitalCallData
+    }
   });
 }));
 
@@ -480,9 +759,6 @@ router.put('/:id', authenticate, handleDocumentUpload, catchAsync(async (req, re
 
   const payment = await Payment.findById(id);
   validate(payment, 'Payment not found');
-
-  // Store previous status to check if notification should be sent
-  const previousStatus = payment.status;
 
   const updateData = {};
   const allowedFields = [
@@ -537,15 +813,6 @@ router.put('/:id', authenticate, handleDocumentUpload, catchAsync(async (req, re
 
   const updatedPayment = await Payment.findByIdAndUpdate(id, updateData);
 
-  // Send notification if payment status changed to approved/completed
-  const confirmedStatuses = ['approved', 'completed'];
-  const wasNotConfirmed = !confirmedStatuses.includes(previousStatus);
-  const isNowConfirmed = confirmedStatuses.includes(updatedPayment.status);
-
-  if (wasNotConfirmed && isNowConfirmed) {
-    await createPaymentConfirmationNotification(updatedPayment, updatedPayment.status);
-  }
-
   res.status(200).json({
     success: true,
     message: 'Payment updated successfully',
@@ -582,17 +849,7 @@ router.patch('/:id/status', authenticate, catchAsync(async (req, res) => {
   const payment = await Payment.findById(id);
   validate(payment, 'Payment not found');
 
-  // Check if status is changing to approved/completed (for notification)
-  const previousStatus = payment.status;
-  const confirmedStatuses = ['approved', 'completed'];
-  const wasNotConfirmed = !confirmedStatuses.includes(previousStatus);
-
   const updatedPayment = await Payment.updateStatus(id, status);
-
-  // Send notification if payment is now confirmed and wasn't before
-  if (wasNotConfirmed && confirmedStatuses.includes(status)) {
-    await createPaymentConfirmationNotification(updatedPayment, status);
-  }
 
   res.status(200).json({
     success: true,
@@ -723,7 +980,7 @@ router.patch('/:id/approve', authenticate, requireInvestmentManagerAccess, catch
 
   const approvedPayment = await Payment.approve(id, userId, adminNotes);
 
-  // Create notification for payment owner
+  // Send payment confirmation notification
   await createPaymentConfirmationNotification(approvedPayment, 'approved');
 
   res.status(200).json({

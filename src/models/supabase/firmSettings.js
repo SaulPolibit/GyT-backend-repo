@@ -20,6 +20,9 @@ class FirmSettings {
       firmAddress: 'firm_address',
       firmPhone: 'firm_phone',
       firmEmail: 'firm_email',
+      themeConfig: 'theme_config',
+      navVisibilityConfig: 'nav_visibility_config',
+      baseCurrency: 'base_currency',
       userId: 'user_id',
       createdAt: 'created_at',
       updatedAt: 'updated_at'
@@ -49,6 +52,9 @@ class FirmSettings {
       firmAddress: dbData.firm_address,
       firmPhone: dbData.firm_phone,
       firmEmail: dbData.firm_email,
+      themeConfig: dbData.theme_config,
+      navVisibilityConfig: dbData.nav_visibility_config,
+      baseCurrency: dbData.base_currency,
       userId: dbData.user_id,
       createdAt: dbData.created_at,
       updatedAt: dbData.updated_at

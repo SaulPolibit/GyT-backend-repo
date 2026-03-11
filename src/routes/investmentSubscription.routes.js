@@ -6,6 +6,7 @@ const express = require('express');
 const { authenticate } = require('../middleware/auth');
 const { catchAsync, validate } = require('../middleware/errorHandler');
 const InvestmentSubscription = require('../models/supabase/investmentSubscription');
+const { Structure, StructureInvestor } = require('../models/supabase');
 
 const router = express.Router();
 
@@ -42,6 +43,28 @@ router.post('/', authenticate, catchAsync(async (req, res) => {
   validate(fundId, 'Fund ID is required');
   validate(requestedAmount, 'Requested amount is required');
   validate(currency, 'Currency is required');
+
+  // Check max investor restriction before allowing new investors
+  if (fundId) {
+    const structureForCheck = await Structure.findById(fundId.trim());
+    if (structureForCheck && structureForCheck.maxInvestorRestriction) {
+      const currentInvestorCount = await Structure.getInvestorCount(fundId.trim());
+      if (currentInvestorCount >= structureForCheck.maxInvestorRestriction) {
+        // Check if investor is already in this structure
+        const existingInvestor = investorId
+          ? await StructureInvestor.findByUserAndStructure(investorId.trim(), fundId.trim())
+          : null;
+        if (!existingInvestor) {
+          return res.status(403).json({
+            success: false,
+            message: 'This structure has reached its maximum number of investors allowed by regulation.',
+            maxInvestorRestriction: structureForCheck.maxInvestorRestriction,
+            currentInvestors: currentInvestorCount
+          });
+        }
+      }
+    }
+  }
 
   const subscriptionData = {
     investmentId: investmentId.trim(),

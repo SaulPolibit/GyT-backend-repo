@@ -138,8 +138,8 @@ const formatErrorResponse = (err, req) => {
     response.errors = err.errors;
   }
 
-  // Add stack trace in development
-  if (!isProduction) {
+  // Add stack trace only in explicit development mode
+  if (process.env.NODE_ENV === 'development') {
     response.stack = err.stack;
     response.originalError = err.originalError;
   }

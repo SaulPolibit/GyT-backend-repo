@@ -96,6 +96,7 @@ class Structure {
       debtGrossInterestRate: 'debt_gross_interest_rate',
       debtInterestRate: 'debt_interest_rate',
       parentStructureOwnershipPercentage: 'parent_structure_ownership_percentage',
+      enableCapitalCalls: 'enable_capital_calls',
       capitalCallNoticePeriod: 'capital_call_notice_period',
       capitalCallPaymentDeadline: 'capital_call_payment_deadline',
       distributionFrequency: 'distribution_frequency',
@@ -118,6 +119,14 @@ class Structure {
       fundType: 'fund_type',
       contractTemplateUrlNational: 'contract_template_url_national',
       contractTemplateUrlInternational: 'contract_template_url_international',
+      // ILPA Fee Configuration
+      managementFeeBase: 'management_fee_base',
+      gpCatchUpRate: 'gp_catch_up_rate',
+      // Proximity Dual-Rate Fee Fields
+      feeRateOnNic: 'fee_rate_on_nic',
+      feeRateOnUnfunded: 'fee_rate_on_unfunded',
+      gpPercentage: 'gp_percentage',
+      maxInvestorRestriction: 'max_investor_restriction',
       createdBy: 'created_by',
       createdAt: 'created_at',
       updatedAt: 'updated_at'
@@ -223,6 +232,7 @@ class Structure {
       debtGrossInterestRate: dbData.debt_gross_interest_rate,
       debtInterestRate: dbData.debt_interest_rate,
       parentStructureOwnershipPercentage: dbData.parent_structure_ownership_percentage,
+      enableCapitalCalls: dbData.enable_capital_calls,
       capitalCallNoticePeriod: dbData.capital_call_notice_period,
       capitalCallPaymentDeadline: dbData.capital_call_payment_deadline,
       distributionFrequency: dbData.distribution_frequency,
@@ -245,6 +255,14 @@ class Structure {
       fundType: dbData.fund_type,
       contractTemplateUrlNational: dbData.contract_template_url_national,
       contractTemplateUrlInternational: dbData.contract_template_url_international,
+      // ILPA Fee Configuration
+      managementFeeBase: dbData.management_fee_base,
+      gpCatchUpRate: dbData.gp_catch_up_rate,
+      // Proximity Dual-Rate Fee Fields
+      feeRateOnNic: dbData.fee_rate_on_nic,
+      feeRateOnUnfunded: dbData.fee_rate_on_unfunded,
+      gpPercentage: dbData.gp_percentage,
+      maxInvestorRestriction: dbData.max_investor_restriction,
       createdBy: dbData.created_by,
       createdAt: dbData.created_at,
       updatedAt: dbData.updated_at
@@ -530,12 +548,17 @@ class Structure {
 
     const structure = this._toModel(structureData);
 
-    // Count unique investors from investments (current investors)
-    const uniqueInvestors = new Set(
-      investments
-        ?.map(inv => inv.user_id || inv.created_by) // Support both old and new column names
-        .filter(id => id !== null) || []
-    );
+    // Count investors from structure_investors table (capital call commitments)
+    const { data: structureInvestors } = await supabase
+      .from('structure_investors')
+      .select('user_id')
+      .eq('structure_id', structureId);
+
+    // Count unique investors from both investments and structure_investors
+    const uniqueInvestors = new Set([
+      ...(investments?.map(inv => inv.user_id || inv.created_by).filter(id => id !== null) || []),
+      ...(structureInvestors?.map(si => si.user_id).filter(id => id !== null) || []),
+    ]);
     structure.currentInvestors = uniqueInvestors.size;
 
     // Count total investments

@@ -4,6 +4,14 @@
  */
 
 require('dotenv').config();
+
+// Warn about missing environment variables (non-fatal for serverless compatibility)
+const REQUIRED_ENV_VARS = ['JWT_SECRET', 'SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY', 'API_KEY'];
+const missingVars = REQUIRED_ENV_VARS.filter(v => !process.env[v]);
+if (missingVars.length > 0) {
+  console.warn(`WARNING: Missing environment variables: ${missingVars.join(', ')}`);
+}
+
 const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
@@ -19,6 +27,7 @@ const { isDevelopment } = require('./utils/helpers');
 
 
 const { connectDB } = require('./config/database');
+const { initCapitalCallRemindersCron } = require('./jobs/capitalCallReminders');
 
 // Initialize Express app
 const app = express();
@@ -124,22 +133,18 @@ app.use('/uploads', (req, res, next) => {
 }, express.static(path.join(__dirname, '../uploads')));
 
 // ===== BODY PARSING MIDDLEWARE =====
-// Parse JSON bodies - EXCEPT for Stripe webhook routes which need raw body
+// Handle Stripe webhooks with raw body (must be before JSON parser)
+// Stripe webhooks need raw body for signature verification
 app.use((req, res, next) => {
-  // Stripe webhooks need raw body for signature verification
   const webhookRoutes = [
     '/api/stripe/webhook',           // Stripe Subscriptions webhook
     '/api/stripe/webhook-connect'    // Stripe Connect webhook
   ];
 
   if (webhookRoutes.some(route => req.originalUrl.startsWith(route))) {
-    // Use raw body for webhook routes
     express.raw({ type: 'application/json' })(req, res, next);
   } else {
-    express.json({
-      limit: '10mb',
-      strict: true,
-    })(req, res, next);
+    express.json({ limit: '10mb', strict: true })(req, res, next);
   }
 });
 
@@ -259,10 +264,6 @@ app.get('/api', (req, res) => {
         description: 'Smart contract interactions and blockchain queries',
         endpoints: '/api/blockchain',
       },
-      stripe: {
-        description: 'Subscription management and payment processing',
-        endpoints: '/api/stripe',
-      },
     },
     documentation: {
       health: 'GET /health',
@@ -310,12 +311,14 @@ app.listen(PORT, async () => {
   console.log(`   • Company: http://localhost:${PORT}/api/company`);
   console.log(`   • Notifications: http://localhost:${PORT}/api/notifications`);
   console.log(`   • Blockchain: http://localhost:${PORT}/api/blockchain`);
-  console.log(`   • Stripe: http://localhost:${PORT}/api/stripe`);
-  console.log(`   • Stripe Connect Webhook: http://localhost:${PORT}/api/stripe/webhook-connect`);
   console.log('=================================\n');
   
   await connectDB();
   console.log('✅ Database connected');
+
+  // Initialize cron jobs
+  initCapitalCallRemindersCron();
+  console.log('✅ Cron jobs initialized');
   // Log environment variables status (without exposing values)
   if (isDevelopment()) {
     console.log('🔑 Environment Variables:');
@@ -326,9 +329,6 @@ app.listen(PORT, async () => {
     console.log(`   • BRIDGE_API_KEY: ${process.env.BRIDGE_API_KEY ? '✓ Set' : '✗ Not set'}`);
     console.log(`   • JWT_SECRET: ${process.env.JWT_SECRET ? '✓ Set' : '✗ Not set'}`);
     console.log(`   • API_KEY: ${process.env.API_KEY ? '✓ Set' : '✗ Not set'}`);
-    console.log(`   • STRIPE_SECRET_KEY: ${process.env.STRIPE_SECRET_KEY ? '✓ Set' : '✗ Not set'}`);
-    console.log(`   • STRIPE_CONNECT_SECRET_KEY: ${process.env.STRIPE_CONNECT_SECRET_KEY ? '✓ Set' : '(using STRIPE_SECRET_KEY)'}`);
-    console.log(`   • STRIPE_CONNECT_WEBHOOK_SECRET: ${process.env.STRIPE_CONNECT_WEBHOOK_SECRET ? '✓ Set' : '(using STRIPE_WEBHOOK_SECRET)'}`);
     console.log('=================================\n');
   }
 });

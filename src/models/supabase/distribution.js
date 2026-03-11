@@ -21,6 +21,20 @@ class Distribution {
       source: 'source',
       notes: 'notes',
       investmentId: 'investment_id',
+      // Period fields
+      startOfPeriod: 'start_of_period',
+      endOfPeriod: 'end_of_period',
+      // Distribution breakdown fields
+      noi: 'noi',
+      refinancingProceeds: 'refinancing_proceeds',
+      bankInterest: 'bank_interest',
+      assetDisposal: 'asset_disposal',
+      reinvestment: 'reinvestment',
+      // Notice and payment fields
+      dayOfNotice: 'day_of_notice',
+      businessDays: 'business_days',
+      paymentDateDeadline: 'payment_date_deadline',
+      description: 'description',
       // Source breakdown
       sourceEquityGain: 'source_equity_gain',
       sourceDebtInterest: 'source_debt_interest',
@@ -36,6 +50,8 @@ class Distribution {
       lpTotalAmount: 'lp_total_amount',
       gpTotalAmount: 'gp_total_amount',
       managementFeeAmount: 'management_fee_amount',
+      // Approval workflow
+      approvalStatus: 'approval_status',
       createdBy: 'created_by',
       createdAt: 'created_at',
       updatedAt: 'updated_at'
@@ -66,6 +82,20 @@ class Distribution {
       source: dbData.source,
       notes: dbData.notes,
       investmentId: dbData.investment_id,
+      // Period fields
+      startOfPeriod: dbData.start_of_period,
+      endOfPeriod: dbData.end_of_period,
+      // Distribution breakdown fields
+      noi: dbData.noi,
+      refinancingProceeds: dbData.refinancing_proceeds,
+      bankInterest: dbData.bank_interest,
+      assetDisposal: dbData.asset_disposal,
+      reinvestment: dbData.reinvestment,
+      // Notice and payment fields
+      dayOfNotice: dbData.day_of_notice,
+      businessDays: dbData.business_days,
+      paymentDateDeadline: dbData.payment_date_deadline,
+      description: dbData.description,
       // Source breakdown
       sourceEquityGain: dbData.source_equity_gain,
       sourceDebtInterest: dbData.source_debt_interest,
@@ -81,6 +111,8 @@ class Distribution {
       lpTotalAmount: dbData.lp_total_amount,
       gpTotalAmount: dbData.gp_total_amount,
       managementFeeAmount: dbData.management_fee_amount,
+      // Approval workflow
+      approvalStatus: dbData.approval_status,
       createdBy: dbData.created_by,
       createdAt: dbData.created_at,
       updatedAt: dbData.updated_at
@@ -175,6 +207,63 @@ class Distribution {
     const filter = { status };
     if (structureId) filter.structureId = structureId;
     return this.find(filter);
+  }
+
+  /**
+   * Find distributions by approval status (for approval workflow)
+   * Supports filtering by single status, array of statuses, or with user filter
+   */
+  static async findByApprovalStatus(filter = {}) {
+    const supabase = getSupabase();
+
+    let query = supabase
+      .from('distributions')
+      .select(`
+        *,
+        structures:structure_id (
+          id,
+          name,
+          type
+        )
+      `);
+
+    // Filter by single approval status
+    if (filter.approvalStatus) {
+      query = query.eq('approval_status', filter.approvalStatus);
+    }
+
+    // Filter by array of approval statuses (IN clause)
+    if (filter.approvalStatusIn && Array.isArray(filter.approvalStatusIn)) {
+      query = query.in('approval_status', filter.approvalStatusIn);
+    }
+
+    // Filter by creator
+    if (filter.createdBy) {
+      query = query.eq('created_by', filter.createdBy);
+    }
+
+    // Filter by structure
+    if (filter.structureId) {
+      query = query.eq('structure_id', filter.structureId);
+    }
+
+    // Order by creation date, newest first
+    query = query.order('created_at', { ascending: false });
+
+    const { data, error } = await query;
+
+    if (error) {
+      throw new Error(`Error finding distributions by approval status: ${error.message}`);
+    }
+
+    return data.map(item => ({
+      ...this._toModel(item),
+      structure: item.structures ? {
+        id: item.structures.id,
+        name: item.structures.name,
+        type: item.structures.type
+      } : null
+    }));
   }
 
   /**

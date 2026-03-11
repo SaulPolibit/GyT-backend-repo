@@ -5,7 +5,7 @@
 const express = require('express');
 const { authenticate } = require('../middleware/auth');
 const { catchAsync, validate } = require('../middleware/errorHandler');
-const { Structure, StructureAdmin, User, Notification, NotificationSettings } = require('../models/supabase');
+const { Structure, StructureAdmin, User, CapitalCall, StructureInvestor, Notification, NotificationSettings } = require('../models/supabase');
 const SmartContract = require('../models/supabase/smartContract');
 const {
   requireInvestmentManagerAccess,
@@ -17,7 +17,6 @@ const {
 } = require('../middleware/rbac');
 const { handleStructureBannerUpload } = require('../middleware/upload');
 const { uploadToSupabase } = require('../utils/fileUpload');
-const { validateStructureCreation } = require('../services/subscriptionLimits.service');
 
 const router = express.Router();
 
@@ -54,6 +53,74 @@ async function enrichStructuresWithSmartContracts(structures) {
 
   return Promise.all(
     structures.map(structure => enrichStructureWithSmartContract(structure))
+  );
+}
+
+/**
+ * Helper function to enrich structure with capital call summary data
+ * @param {Object} structure - Structure object
+ * @returns {Promise<Object>} Structure with capital call summary
+ */
+async function enrichStructureWithCapitalCallSummary(structure) {
+  if (!structure) return structure;
+
+  try {
+    // Get all capital calls for this structure
+    const capitalCalls = await CapitalCall.findByStructureId(structure.id);
+
+    // Calculate summary metrics using total_drawdown from allocations (includes fees + VAT for ProximityParks methodology)
+    const totalCalled = capitalCalls.reduce((sum, cc) => {
+      // Sum total_drawdown from all allocations, fallback to total_due, then totalCallAmount
+      const callDrawdown = (cc.allocations || []).reduce((allocSum, alloc) => {
+        return allocSum + (alloc.total_drawdown || alloc.totalDrawdown || alloc.total_due || alloc.totalDue || 0);
+      }, 0);
+      return sum + (callDrawdown || cc.totalCallAmount || 0);
+    }, 0);
+    const totalPaid = capitalCalls.reduce((sum, cc) => sum + (cc.totalPaidAmount || 0), 0);
+    const callCount = capitalCalls.length;
+    const lastCall = capitalCalls[0]; // Already sorted by date desc from findByStructureId
+
+    // Determine if capital calls are enabled for this structure type
+    const capitalCallsEnabled = structure.type === 'fund' ||
+                                structure.type === 'fideicomiso' ||
+                                structure.managementFeeBase === 'nic_plus_unfunded' ||
+                                callCount > 0;
+
+    return {
+      ...structure,
+      capitalCallSummary: {
+        enabled: capitalCallsEnabled,
+        totalCalled,
+        totalPaid,
+        totalUnpaid: totalCalled - totalPaid,
+        callCount,
+        percentageCalled: structure.totalCommitment > 0
+          ? parseFloat(((totalCalled / structure.totalCommitment) * 100).toFixed(2))
+          : 0,
+        lastCallDate: lastCall?.callDate || null,
+        lastCallNumber: lastCall?.callNumber || null,
+        lastCallStatus: lastCall?.status || null
+      }
+    };
+  } catch (error) {
+    console.error(`Error fetching capital call summary for structure ${structure.id}:`, error.message);
+    return {
+      ...structure,
+      capitalCallSummary: null
+    };
+  }
+}
+
+/**
+ * Helper function to enrich multiple structures with capital call summary data
+ * @param {Array} structures - Array of structure objects
+ * @returns {Promise<Array>} Structures with capital call summaries
+ */
+async function enrichStructuresWithCapitalCallSummaries(structures) {
+  if (!structures || !Array.isArray(structures)) return structures;
+
+  return Promise.all(
+    structures.map(structure => enrichStructureWithCapitalCallSummary(structure))
   );
 }
 
@@ -143,6 +210,7 @@ router.post('/', authenticate, requireInvestmentManagerAccess, handleStructureBa
     debtGrossInterestRate,
     debtInterestRate,
     parentStructureOwnershipPercentage,
+    enableCapitalCalls,
     capitalCallNoticePeriod,
     capitalCallPaymentDeadline,
     distributionFrequency,
@@ -164,7 +232,15 @@ router.post('/', authenticate, requireInvestmentManagerAccess, handleStructureBa
     capitalCallDefaultPercentage,
     fundType,
     contractTemplateUrlNational,
-    contractTemplateUrlInternational
+    contractTemplateUrlInternational,
+    // ILPA Fee Configuration
+    managementFeeBase,
+    gpCatchUpRate,
+    // Proximity Dual-Rate Fee Fields
+    feeRateOnNic,
+    feeRateOnUnfunded,
+    gpPercentage,
+    maxInvestorRestriction
   } = req.body;
 
   // Validate required fields
@@ -291,6 +367,7 @@ router.post('/', authenticate, requireInvestmentManagerAccess, handleStructureBa
     debtGrossInterestRate: sanitizeNumber(debtGrossInterestRate, null),
     debtInterestRate: sanitizeNumber(debtInterestRate, null),
     parentStructureOwnershipPercentage: sanitizeNumber(parentStructureOwnershipPercentage, null),
+    enableCapitalCalls: enableCapitalCalls === true || enableCapitalCalls === 'true',
     capitalCallNoticePeriod: sanitizeNumber(capitalCallNoticePeriod, null),
     capitalCallPaymentDeadline: sanitizeNumber(capitalCallPaymentDeadline, null),
     distributionFrequency: distributionFrequency?.trim() || '',
@@ -308,42 +385,30 @@ router.post('/', authenticate, requireInvestmentManagerAccess, handleStructureBa
     vatRateLegalEntities: sanitizeNumber(vatRateLegalEntities, null),
     defaultTaxRate: sanitizeNumber(defaultTaxRate, null),
     determinedTier: sanitizeNumber(determinedTier, null),
-    calculatedIssuances: calculatedIssuances ? (typeof calculatedIssuances === 'object' ? calculatedIssuances : null) : null,
+    calculatedIssuances: sanitizeNumber(calculatedIssuances, null),
     capitalCallDefaultPercentage: sanitizeNumber(capitalCallDefaultPercentage, null),
     fundType: fundType?.trim() || '',
     contractTemplateUrlNational: contractTemplateUrlNational?.trim() || '',
     contractTemplateUrlInternational: contractTemplateUrlInternational?.trim() || '',
+    // ILPA Fee Configuration
+    managementFeeBase: managementFeeBase?.trim() || 'committed',
+    gpCatchUpRate: sanitizeNumber(gpCatchUpRate, 100),
+    // Proximity Dual-Rate Fee Fields
+    feeRateOnNic: sanitizeNumber(feeRateOnNic, null),
+    feeRateOnUnfunded: sanitizeNumber(feeRateOnUnfunded, null),
+    gpPercentage: sanitizeNumber(gpPercentage, null),
+    maxInvestorRestriction: sanitizeNumber(maxInvestorRestriction, null),
     createdBy: userId
   };
-
-  // Validate subscription limits for structure creation (tier_based model only)
-  const subscriptionValidation = await validateStructureCreation(userId, structureData.totalCommitment);
-  if (!subscriptionValidation.allowed) {
-    return res.status(403).json({
-      success: false,
-      error: 'SUBSCRIPTION_LIMIT_EXCEEDED',
-      message: subscriptionValidation.reason,
-      details: {
-        currentTotal: subscriptionValidation.currentTotal,
-        newCommitment: subscriptionValidation.newCommitment,
-        projectedTotal: subscriptionValidation.projectedTotal,
-        limit: subscriptionValidation.limit,
-        tier: subscriptionValidation.tier,
-        upgradeOption: subscriptionValidation.upgradeOption
-      }
-    });
-  }
 
   const structure = await Structure.create(structureData);
 
   // Enrich with smart contract data
   const enrichedStructure = await enrichStructureWithSmartContract(structure);
 
-  // Create notifications for all investors (role 3) who have newStructureNotifications enabled
+  // Create notifications for investors (role 3) based on their notification settings
   try {
-    // Find all users with role 3 (investors)
-    const investors = await User.find({ role: 3 });
-
+    const investors = await User.find({ role: ROLES.INVESTOR });
     if (investors && investors.length > 0) {
       // Filter investors based on their notification settings
       const investorsToNotify = [];
@@ -351,31 +416,35 @@ router.post('/', authenticate, requireInvestmentManagerAccess, handleStructureBa
       for (const investor of investors) {
         try {
           const settings = await NotificationSettings.findByUserId(investor.id);
-          // Send notification if no settings found (default true) or newStructureNotifications is enabled
+          // Default to sending if no settings found or newStructureNotifications is not explicitly false
           const shouldNotify = !settings || settings.newStructureNotifications !== false;
 
           if (shouldNotify) {
             investorsToNotify.push(investor);
+          } else {
+            console.log(`[Structure] User ${investor.id} has newStructureNotifications disabled, skipping`);
           }
         } catch (settingsError) {
-          // If we can't get settings, default to sending notification
+          // If error checking settings, include investor by default
+          console.log(`[Structure] Error checking settings for ${investor.id}, including by default`);
           investorsToNotify.push(investor);
         }
       }
 
       if (investorsToNotify.length > 0) {
-        // Create notifications for each investor who opted in
+        console.log(`[Structure] Notifying ${investorsToNotify.length} of ${investors.length} investors about new structure`);
+
         const notificationsData = investorsToNotify.map(investor => ({
           userId: investor.id,
           notificationType: 'new_investment',
           channel: 'portal',
           title: 'New Investment Opportunity',
-          message: `A new investment structure "${structure.name}" has been created. Check out the marketplace for more details.`,
+          message: `A new investment structure "${structure.name}" is now available. Check the marketplace for details.`,
           priority: 'normal',
           relatedEntityType: 'structure',
           relatedEntityId: structure.id,
-          actionUrl: `/lp-portal/marketplace/structure/${structure.id}`,
           senderId: userId,
+          actionUrl: `/lp-portal/marketplace/${structure.id}`,
           metadata: {
             structureId: structure.id,
             structureName: structure.name,
@@ -384,14 +453,12 @@ router.post('/', authenticate, requireInvestmentManagerAccess, handleStructureBa
         }));
 
         await Notification.createMany(notificationsData);
-        console.log(`[Structure] Created ${notificationsData.length} notifications for investors about new structure: ${structure.name} (${investors.length - investorsToNotify.length} opted out)`);
-      } else {
-        console.log(`[Structure] No investors to notify about new structure: ${structure.name} (all opted out)`);
+        console.log(`[Structure] Created ${notificationsData.length} notifications for new structure ${structure.id}`);
       }
     }
-  } catch (notificationError) {
-    // Log error but don't fail the structure creation
-    console.error('[Structure] Error creating notifications for investors:', notificationError.message);
+  } catch (notifyError) {
+    // Log error but don't fail structure creation
+    console.error('[Structure] Error creating notifications:', notifyError.message);
   }
 
   res.status(201).json({
@@ -409,9 +476,10 @@ router.post('/', authenticate, requireInvestmentManagerAccess, handleStructureBa
  * @query   type?: string - Filter by structure type
  * @query   status?: string - Filter by status
  * @query   parentId?: string - Filter by parent structure ID
+ * @query   includeCapitalCalls?: string - Include capital call summary data ('true' to enable)
  */
 router.get('/', authenticate, catchAsync(async (req, res) => {
-  const { createdBy, type, status, parentId } = req.query;
+  const { createdBy, type, status, parentId, includeCapitalCalls } = req.query;
 
   // Build filter object based on query parameters
   const filter = {};
@@ -424,7 +492,12 @@ router.get('/', authenticate, catchAsync(async (req, res) => {
   const structures = await Structure.find(filter);
 
   // Enrich with smart contract data
-  const enrichedStructures = await enrichStructuresWithSmartContracts(structures);
+  let enrichedStructures = await enrichStructuresWithSmartContracts(structures);
+
+  // Optionally enrich with capital call summary data
+  if (includeCapitalCalls === 'true') {
+    enrichedStructures = await enrichStructuresWithCapitalCallSummaries(enrichedStructures);
+  }
 
   res.status(200).json({
     success: true,
@@ -466,15 +539,22 @@ router.get('/root', authenticate, requireInvestmentManagerAccess, catchAsync(asy
  * @route   GET /api/structures/:id
  * @desc    Get a single structure by ID
  * @access  Private (requires authentication)
+ * @query   includeCapitalCalls?: string - Include capital call summary data ('true' to enable)
  */
 router.get('/:id', authenticate, catchAsync(async (req, res) => {
   const { id } = req.params;
+  const { includeCapitalCalls } = req.query;
 
   const structure = await Structure.findById(id);
   validate(structure, 'Structure not found');
 
   // Enrich with smart contract data
-  const enrichedStructure = await enrichStructureWithSmartContract(structure);
+  let enrichedStructure = await enrichStructureWithSmartContract(structure);
+
+  // Optionally enrich with capital call summary data
+  if (includeCapitalCalls === 'true') {
+    enrichedStructure = await enrichStructureWithCapitalCallSummary(enrichedStructure);
+  }
 
   res.status(200).json({
     success: true,
@@ -494,10 +574,7 @@ router.get('/:id/children', authenticate, requireInvestmentManagerAccess, catchA
   const structure = await Structure.findById(id);
   validate(structure, 'Structure not found');
 
-  // Root can access any structure, Admin can only access their own
-  if (userRole === ROLES.ADMIN) {
-    validate(structure.createdBy === userId, 'Unauthorized access to structure');
-  }
+  // Read access: requireInvestmentManagerAccess gate is sufficient
 
   const children = await Structure.findChildStructures(id);
 
@@ -529,10 +606,7 @@ router.get('/:id/with-investors', authenticate, catchAsync(async (req, res) => {
   const structure = await Structure.findById(id);
   validate(structure, 'Structure not found');
 
-  // Root and Guest can access any structure, Admin can only access their own
-  if (userRole === ROLES.ADMIN) {
-    validate(structure.createdBy === userId, 'Unauthorized access to structure');
-  }
+  // Read access: role gate above is sufficient (matches GET /:id behavior)
 
   const structureWithInvestors = await Structure.findWithInvestors(id);
 
@@ -542,6 +616,97 @@ router.get('/:id/with-investors', authenticate, catchAsync(async (req, res) => {
   res.status(200).json({
     success: true,
     data: enrichedStructure
+  });
+}));
+
+/**
+ * @route   GET /api/structures/:id/investors
+ * @desc    Get all investors for a structure with their commitment and ownership data
+ * @access  Private (requires authentication, Root/Admin/Guest)
+ */
+router.get('/:id/investors', authenticate, catchAsync(async (req, res) => {
+  const { userId, userRole } = getUserContext(req);
+  const { id } = req.params;
+
+  // Only allow Root, Admin, and Guest roles
+  validate(
+    [ROLES.ROOT, ROLES.ADMIN, ROLES.GUEST].includes(userRole),
+    'Unauthorized: Only Root, Admin, and Guest roles can access this endpoint'
+  );
+
+  const structure = await Structure.findById(id);
+  validate(structure, 'Structure not found');
+
+  // Read access: role gate above is sufficient (matches GET /:id behavior)
+
+  // Get all investors for this structure from structure_investors junction table
+  const structureInvestors = await StructureInvestor.findByStructureId(id);
+
+  // Get capital calls for this structure to calculate called capital per investor
+  const capitalCalls = await CapitalCall.find({ structureId: id });
+
+  // Transform the data to match what the frontend expects
+  const investors = structureInvestors.map(si => {
+    // Get user data from the joined users table
+    const user = si.user || {};
+
+    // Calculate called capital for this investor from all capital calls
+    let calledCapital = 0;
+    if (capitalCalls && capitalCalls.length > 0) {
+      capitalCalls.forEach(call => {
+        // CapitalCall model returns investorAllocations (not allocations)
+        const allocs = call.investorAllocations || call.allocations;
+        if (allocs) {
+          const allocation = allocs.find(a => a.investorId === si.userId || a.userId === si.userId);
+          if (allocation && call.status !== 'draft') {
+            calledCapital += allocation.callAmount || 0;
+          }
+        }
+      });
+    }
+
+    // Build investor name based on available data
+    const name = user.first_name && user.last_name
+      ? `${user.first_name} ${user.last_name}`
+      : user.email || 'Unknown Investor';
+
+    return {
+      id: si.id,
+      name: name,
+      email: user.email,
+      type: user.investor_type || 'individual',
+      userId: si.userId,
+      structureId: si.structureId,
+      commitment: si.commitment || 0,
+      ownershipPercent: si.ownershipPercent || 0,
+      calledCapital: calledCapital,
+      uncalledCapital: (si.commitment || 0) - calledCapital,
+      feeDiscount: si.feeDiscount || 0,
+      vatExempt: si.vatExempt || false,
+      customTerms: si.customTerms,
+      status: si.status || 'active',
+      // Include fundOwnerships array for compatibility with capital call wizard
+      fundOwnerships: [{
+        fundId: id,
+        commitment: si.commitment || 0,
+        ownershipPercent: si.ownershipPercent || 0,
+        calledCapital: calledCapital,
+        uncalledCapital: (si.commitment || 0) - calledCapital,
+        feeDiscount: si.feeDiscount || 0,
+        vatExempt: si.vatExempt || false,
+      }]
+    };
+  });
+
+  res.status(200).json({
+    success: true,
+    data: investors,
+    meta: {
+      structureId: id,
+      structureName: structure.name,
+      totalInvestors: investors.length,
+      totalCommitment: investors.reduce((sum, inv) => sum + (inv.commitment || 0), 0)
+    }
   });
 }));
 
@@ -598,19 +763,52 @@ router.put('/:id', authenticate, requireInvestmentManagerAccess, handleStructure
     'internationalAccountBank', 'internationalSwift', 'internationalHolderName',
     'internationalBankAddress', 'blockchainNetwork', 'walletAddress',
     'debtGrossInterestRate', 'debtInterestRate', 'parentStructureOwnershipPercentage',
-    'capitalCallNoticePeriod', 'capitalCallPaymentDeadline', 'distributionFrequency',
+    'enableCapitalCalls', 'capitalCallNoticePeriod', 'capitalCallPaymentDeadline', 'distributionFrequency',
     'witholdingDividendTaxRateNaturalPersons', 'witholdingDividendTaxRateLegalEntities',
     'incomeDebtTaxRateNaturalPersons', 'incomeEquityTaxRateNaturalPersons',
     'incomeDebtTaxRateLegalEntities', 'incomeEquityTaxRateLegalEntities',
     'walletOwnerAddress', 'operatingAgreementHash', 'incomeFlowTarget', 'vatRate',
     'vatRateNaturalPersons', 'vatRateLegalEntities', 'defaultTaxRate', 'determinedTier',
     'calculatedIssuances', 'capitalCallDefaultPercentage', 'fundType',
-    'contractTemplateUrlNational', 'contractTemplateUrlInternational'
+    'contractTemplateUrlNational', 'contractTemplateUrlInternational',
+    // ILPA Fee Configuration
+    'managementFeeBase', 'gpCatchUpRate',
+    // Proximity Dual-Rate Fee Fields
+    'feeRateOnNic', 'feeRateOnUnfunded', 'gpPercentage',
+    'maxInvestorRestriction'
   ];
+
+  // Fields that are numeric in the database and must not receive empty strings
+  const numericFields = new Set([
+    'totalCommitment', 'managementFee', 'carriedInterest', 'hurdleRate',
+    'termYears', 'extensionYears', 'performanceFee', 'preferredReturn',
+    'plannedInvestments', 'investors', 'minimumTicket', 'maximumTicket',
+    'targetReturns', 'debtGrossInterestRate', 'debtInterestRate',
+    'parentStructureOwnershipPercentage', 'capitalCallNoticePeriod',
+    'capitalCallPaymentDeadline', 'vatRate', 'vatRateNaturalPersons',
+    'vatRateLegalEntities', 'defaultTaxRate', 'determinedTier',
+    'calculatedIssuances', 'capitalCallDefaultPercentage',
+    'witholdingDividendTaxRateNaturalPersons', 'witholdingDividendTaxRateLegalEntities',
+    'incomeDebtTaxRateNaturalPersons', 'incomeEquityTaxRateNaturalPersons',
+    'incomeDebtTaxRateLegalEntities', 'incomeEquityTaxRateLegalEntities',
+    'gpCatchUpRate',
+    'feeRateOnNic', 'feeRateOnUnfunded', 'gpPercentage',
+    'maxInvestorRestriction'
+  ]);
+
+  const sanitizeUpdateNumber = (value) => {
+    if (value === null || value === undefined || value === 'null' || value === '') {
+      return null;
+    }
+    const num = Number(value);
+    return isNaN(num) ? null : num;
+  };
 
   for (const field of allowedFields) {
     if (req.body[field] !== undefined) {
-      updateData[field] = req.body[field];
+      updateData[field] = numericFields.has(field)
+        ? sanitizeUpdateNumber(req.body[field])
+        : req.body[field];
     }
   }
 
@@ -651,9 +849,10 @@ router.patch('/:id/financials', authenticate, requireInvestmentManagerAccess, ca
   const structure = await Structure.findById(id);
   validate(structure, 'Structure not found');
 
-  // Root can edit any structure, Admin can only edit their own
+  // Root can edit any structure, Admin can only edit assigned structures
   if (userRole === ROLES.ADMIN) {
-    validate(structure.createdBy === userId, 'Unauthorized access to structure');
+    const canEdit = await canEditStructure(structure, userRole, userId, StructureAdmin);
+    validate(canEdit, 'Unauthorized access to structure');
   }
 
   const financials = {};
@@ -694,9 +893,10 @@ router.post('/:id/admins', authenticate, requireInvestmentManagerAccess, catchAs
   const structure = await Structure.findById(id);
   validate(structure, 'Structure not found');
 
-  // Root can add to any structure, Admin can only add to their own
+  // Root can add to any structure, Admin can only add to assigned structures
   if (userRole === ROLES.ADMIN) {
-    validate(structure.createdBy === userId, 'Unauthorized access to structure');
+    const canEdit = await canEditStructure(structure, userRole, userId, StructureAdmin);
+    validate(canEdit, 'Unauthorized access to structure');
   }
 
   // Check if target user exists and has valid role
@@ -743,10 +943,7 @@ router.get('/:id/admins', authenticate, requireInvestmentManagerAccess, catchAsy
   const structure = await Structure.findById(id);
   validate(structure, 'Structure not found');
 
-  // Root can view any structure, Admin can only view their own
-  if (userRole === ROLES.ADMIN) {
-    validate(structure.createdBy === userId, 'Unauthorized access to structure');
-  }
+  // Read access: requireInvestmentManagerAccess gate is sufficient
 
   // Get all admins/support for this structure
   const admins = await StructureAdmin.findByStructureId(id);
@@ -771,9 +968,10 @@ router.delete('/:id/admins/:targetUserId', authenticate, requireInvestmentManage
   const structure = await Structure.findById(id);
   validate(structure, 'Structure not found');
 
-  // Root can remove from any structure, Admin can only remove from their own
+  // Root can remove from any structure, Admin can only remove from assigned structures
   if (userRole === ROLES.ADMIN) {
-    validate(structure.createdBy === userId, 'Unauthorized access to structure');
+    const canEdit = await canEditStructure(structure, userRole, userId, StructureAdmin);
+    validate(canEdit, 'Unauthorized access to structure');
   }
 
   // Check if relationship exists
@@ -801,9 +999,10 @@ router.delete('/:id', authenticate, requireInvestmentManagerAccess, catchAsync(a
   const structure = await Structure.findById(id);
   validate(structure, 'Structure not found');
 
-  // Root can delete any structure, Admin can only delete their own
+  // Root can delete any structure, Admin can only delete assigned structures
   if (userRole === ROLES.ADMIN) {
-    validate(structure.createdBy === userId, 'Unauthorized access to structure');
+    const canEdit = await canEditStructure(structure, userRole, userId, StructureAdmin);
+    validate(canEdit, 'Unauthorized access to structure');
   }
 
   await Structure.findByIdAndDelete(id);

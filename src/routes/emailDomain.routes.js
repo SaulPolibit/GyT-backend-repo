@@ -220,10 +220,6 @@ router.post('/:id/verify', authenticate, catchAsync(async (req, res) => {
   // Get the actual current status from Resend
   let domainStatus;
   try {
-    // Debug: Log which API key is being used (first 10 chars only)
-    const apiKey = process.env.RESEND_API_KEY || '';
-    console.log('[EmailDomain] Using API key:', apiKey.substring(0, 10) + '...');
-
     domainStatus = await getDomain(domain.resendDomainId);
     // Debug: Log what Resend returns
     console.log('[EmailDomain] Resend domain status:', JSON.stringify(domainStatus, null, 2));
@@ -371,6 +367,91 @@ router.delete('/:id', authenticate, catchAsync(async (req, res) => {
     success: true,
     message: 'Email domain deleted successfully'
   });
+}));
+
+/**
+ * @route   POST /api/email-domains/sync
+ * @desc    Sync domains from Resend to local database (import existing domains)
+ * @access  Private (Root only)
+ */
+router.post('/sync', authenticate, catchAsync(async (req, res) => {
+  const { userRole } = getUserContext(req);
+
+  // Only ROOT can sync domains
+  if (userRole !== ROLES.ROOT) {
+    return res.status(403).json({
+      success: false,
+      message: 'Unauthorized: Only ROOT users can sync email domains'
+    });
+  }
+
+  try {
+    // Get all domains from Resend
+    const resendDomains = await listDomains();
+
+    if (!resendDomains || resendDomains.length === 0) {
+      return res.status(200).json({
+        success: true,
+        message: 'No domains found in Resend account',
+        data: { imported: 0, existing: 0, domains: [] }
+      });
+    }
+
+    const imported = [];
+    const existing = [];
+
+    for (const resendDomain of resendDomains) {
+      // Check if domain already exists in local database
+      const existingDomain = await EmailDomain.findByDomainName(resendDomain.name);
+
+      if (existingDomain) {
+        existing.push(resendDomain.name);
+        // Update status if needed
+        if (existingDomain.status !== resendDomain.status) {
+          await EmailDomain.updateStatus(existingDomain.id, resendDomain.status, null);
+        }
+      } else {
+        // Get full domain details including DNS records
+        let fullDomain;
+        try {
+          fullDomain = await getDomain(resendDomain.id);
+        } catch (e) {
+          fullDomain = resendDomain;
+        }
+
+        // Import domain to local database
+        const newDomain = await EmailDomain.create({
+          resendDomainId: resendDomain.id,
+          domainName: resendDomain.name,
+          status: fullDomain.status || resendDomain.status,
+          region: fullDomain.region || resendDomain.region,
+          dnsRecords: fullDomain.records || []
+        });
+
+        imported.push({
+          id: newDomain.id,
+          domainName: resendDomain.name,
+          status: resendDomain.status
+        });
+      }
+    }
+
+    res.status(200).json({
+      success: true,
+      message: `Synced ${imported.length} new domain(s), ${existing.length} already existed`,
+      data: {
+        imported: imported.length,
+        existing: existing.length,
+        domains: imported
+      }
+    });
+  } catch (error) {
+    console.error('Error syncing domains from Resend:', error);
+    return res.status(500).json({
+      success: false,
+      message: `Failed to sync domains: ${error.message}`
+    });
+  }
 }));
 
 /**

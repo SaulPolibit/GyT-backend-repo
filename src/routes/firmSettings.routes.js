@@ -8,7 +8,8 @@ const { catchAsync, validate } = require('../middleware/errorHandler');
 const FirmSettings = require('../models/supabase/firmSettings');
 const { handleFirmLogoUpload } = require('../middleware/upload');
 const { uploadToSupabase } = require('../utils/fileUpload');
-const { canCreate, getUserContext } = require('../middleware/rbac');
+const { canCreate, getUserContext, ROLES } = require('../middleware/rbac');
+const { generateThemePalette } = require('../utils/themeGenerator');
 
 const router = express.Router();
 
@@ -44,6 +45,33 @@ router.get('/logo', catchAsync(async (_req, res) => {
 }));
 
 /**
+ * @route   GET /api/firm-settings/theme
+ * @desc    Get firm theme as pre-computed CSS variables (public endpoint)
+ * @access  Public
+ */
+router.get('/theme', catchAsync(async (_req, res) => {
+  const settings = await FirmSettings.get();
+
+  if (!settings?.themeConfig?.primaryColor) {
+    return res.status(200).json({
+      success: true,
+      data: null
+    });
+  }
+
+  const { cssVariables, fontUrl } = generateThemePalette(settings.themeConfig);
+
+  res.status(200).json({
+    success: true,
+    data: {
+      cssVariables,
+      fontUrl,
+      themeConfig: settings.themeConfig
+    }
+  });
+}));
+
+/**
  * @route   GET /api/firm-settings
  * @desc    Get global firm settings
  * @access  Private
@@ -52,16 +80,20 @@ router.get('/', authenticate, catchAsync(async (req, res) => {
   // Get global settings
   const settings = await FirmSettings.get();
 
-  if (!settings) {
-    return res.status(404).json({
-      success: false,
-      message: 'No firm settings found. Please contact administrator.'
-    });
-  }
-
+  // Return defaults if no settings exist yet (first-time setup)
   res.status(200).json({
     success: true,
-    data: settings
+    data: settings || {
+      firmName: 'My Firm',
+      firmLogo: null,
+      firmDescription: null,
+      firmWebsite: null,
+      firmAddress: null,
+      firmPhone: null,
+      firmEmail: null,
+      themeConfig: null,
+      navVisibilityConfig: null,
+    }
   });
 }));
 
@@ -123,6 +155,61 @@ router.post('/', authenticate, catchAsync(async (req, res) => {
 }));
 
 /**
+ * @route   GET /api/firm-settings/nav-visibility
+ * @desc    Get navigation visibility config
+ * @access  Private (authenticated)
+ */
+router.get('/nav-visibility', authenticate, catchAsync(async (req, res) => {
+  const settings = await FirmSettings.get();
+
+  res.status(200).json({
+    success: true,
+    data: settings?.navVisibilityConfig || null
+  });
+}));
+
+/**
+ * @route   PUT /api/firm-settings/nav-visibility
+ * @desc    Update navigation visibility config
+ * @access  Private (Root only)
+ */
+router.put('/nav-visibility', authenticate, catchAsync(async (req, res) => {
+  const { userRole } = getUserContext(req);
+
+  // Root only
+  if (userRole !== ROLES.ROOT) {
+    return res.status(403).json({
+      success: false,
+      message: 'Access denied. Only Root users can update navigation visibility.'
+    });
+  }
+
+  const { investmentManager, lpPortal, features } = req.body;
+  validate(investmentManager || lpPortal || features, 'No navigation visibility data provided');
+
+  const navVisibilityConfig = { investmentManager, lpPortal, features };
+
+  const existingSettings = await FirmSettings.get();
+
+  if (!existingSettings) {
+    return res.status(404).json({
+      success: false,
+      message: 'No firm settings found. Please create firm settings first.'
+    });
+  }
+
+  const settings = await FirmSettings.findByIdAndUpdate(existingSettings.id, {
+    navVisibilityConfig
+  });
+
+  res.status(200).json({
+    success: true,
+    message: 'Navigation visibility updated successfully',
+    data: settings.navVisibilityConfig
+  });
+}));
+
+/**
  * @route   PUT /api/firm-settings
  * @desc    Update global firm settings
  * @access  Private (Root, Admin only)
@@ -141,8 +228,13 @@ router.put('/', authenticate, handleFirmLogoUpload, catchAsync(async (req, res) 
 
   const userId = req.auth.userId || req.user.id;
 
-  // Get existing global settings
-  const existingSettings = await FirmSettings.get();
+  // Get existing global settings — auto-create if none exist
+  let existingSettings = await FirmSettings.get();
+
+  if (!existingSettings) {
+    // Auto-create default firm settings record
+    existingSettings = await FirmSettings.create({ firmName: 'My Firm', userId });
+  }
 
   const updateData = {};
   const allowedFields = [
@@ -152,7 +244,9 @@ router.put('/', authenticate, handleFirmLogoUpload, catchAsync(async (req, res) 
     'firmWebsite',
     'firmAddress',
     'firmPhone',
-    'firmEmail'
+    'firmEmail',
+    'themeConfig',
+    'baseCurrency'
   ];
 
   // Handle file upload if present
@@ -183,7 +277,12 @@ router.put('/', authenticate, handleFirmLogoUpload, catchAsync(async (req, res) 
     if (field === 'firmLogo' && req.file) continue;
 
     if (req.body[field] !== undefined) {
-      if (typeof req.body[field] === 'string') {
+      if (field === 'themeConfig') {
+        // Parse JSON string if needed, or accept object directly
+        updateData[field] = typeof req.body[field] === 'string'
+          ? JSON.parse(req.body[field])
+          : req.body[field];
+      } else if (typeof req.body[field] === 'string') {
         updateData[field] = req.body[field].trim();
       } else {
         updateData[field] = req.body[field];
@@ -193,40 +292,15 @@ router.put('/', authenticate, handleFirmLogoUpload, catchAsync(async (req, res) 
 
   validate(Object.keys(updateData).length > 0, 'No valid fields provided for update');
 
-  // Add userId to track who made the update/creation
+  // Add userId to track who made the update
   updateData.userId = userId;
 
-  let settings;
-  let message;
-  let statusCode;
+  // Update using the existing settings ID
+  const settings = await FirmSettings.findByIdAndUpdate(existingSettings.id, updateData);
 
-  // If settings don't exist, create them
-  if (!existingSettings) {
-    // Set defaults for required fields if not provided
-    const createData = {
-      firmName: updateData.firmName || 'My Firm',
-      firmLogo: updateData.firmLogo || null,
-      firmDescription: updateData.firmDescription || '',
-      firmWebsite: updateData.firmWebsite || '',
-      firmAddress: updateData.firmAddress || '',
-      firmPhone: updateData.firmPhone || '',
-      firmEmail: updateData.firmEmail || '',
-      userId
-    };
-
-    settings = await FirmSettings.create(createData);
-    message = 'Firm settings created successfully';
-    statusCode = 201;
-  } else {
-    // Update using the existing settings ID
-    settings = await FirmSettings.findByIdAndUpdate(existingSettings.id, updateData);
-    message = 'Firm settings updated successfully';
-    statusCode = 200;
-  }
-
-  res.status(statusCode).json({
+  res.status(200).json({
     success: true,
-    message,
+    message: 'Firm settings updated successfully',
     data: settings
   });
 }));
@@ -263,7 +337,9 @@ router.put('/:id', authenticate, handleFirmLogoUpload, catchAsync(async (req, re
     'firmWebsite',
     'firmAddress',
     'firmPhone',
-    'firmEmail'
+    'firmEmail',
+    'themeConfig',
+    'baseCurrency'
   ];
 
   // Handle file upload if present
@@ -294,7 +370,11 @@ router.put('/:id', authenticate, handleFirmLogoUpload, catchAsync(async (req, re
     if (field === 'firmLogo' && req.file) continue;
 
     if (req.body[field] !== undefined) {
-      if (typeof req.body[field] === 'string') {
+      if (field === 'themeConfig') {
+        updateData[field] = typeof req.body[field] === 'string'
+          ? JSON.parse(req.body[field])
+          : req.body[field];
+      } else if (typeof req.body[field] === 'string') {
         updateData[field] = req.body[field].trim();
       } else {
         updateData[field] = req.body[field];
