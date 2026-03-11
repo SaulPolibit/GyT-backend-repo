@@ -22,11 +22,11 @@ const router = express.Router();
 const findSubscriptionOwner = async () => {
   const supabase = getSupabase();
 
-  // Get the active platform subscription
+  // Get the platform subscription (include canceling - user can still use credits)
   const { data: subscription, error } = await supabase
     .from('platform_subscription')
     .select('id, managed_by_user_id, subscription_model, subscription_tier')
-    .in('subscription_status', ['active', 'trialing'])
+    .in('subscription_status', ['active', 'trialing', 'canceling'])
     .limit(1)
     .maybeSingle();
 

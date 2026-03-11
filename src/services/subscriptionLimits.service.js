@@ -175,10 +175,11 @@ const getAnyPlatformSubscription = async () => {
 const getPlatformSubscription = async () => {
   const supabase = getSupabase();
 
+  // Include 'canceling' - user can still use credits until subscription actually ends
   const { data: subscription, error } = await supabase
     .from('platform_subscription')
     .select('*')
-    .in('subscription_status', ['active', 'trialing'])
+    .in('subscription_status', ['active', 'trialing', 'canceling'])
     .limit(1)
     .single();
 
