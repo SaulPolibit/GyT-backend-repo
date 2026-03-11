@@ -441,50 +441,60 @@ router.post('/webhook', express.raw({ type: 'application/json' }), catchAsync(as
       console.log(`[Stripe Webhook] Subscription ${event.type}: ${subscription.id}, status: ${subscription.status}`);
       console.log(`[Stripe Webhook] Subscription metadata:`, subscription.metadata);
 
+      // Get tier and model from subscription metadata (set during checkout)
+      const { planTier, subscriptionModel } = subscription.metadata || {};
+      const finalModel = subscriptionModel || SUBSCRIPTION_MODEL;
+      const finalTier = normalizeTier(finalModel, planTier || SUBSCRIPTION_TIER);
+      const webhookLimits = getLimitsForTier(finalModel, finalTier);
+
+      // Try to find user by stripeCustomerId
       const user = await User.findOne({ stripeCustomerId: subscription.customer });
+
       if (user) {
         await User.findByIdAndUpdate(user.id, {
           stripeSubscriptionId: subscription.id,
           subscriptionStatus: subscription.status
         });
-
-        // Get tier and model from subscription metadata (set during checkout)
-        const { planTier, subscriptionModel } = subscription.metadata || {};
-        const finalModel = subscriptionModel || SUBSCRIPTION_MODEL;
-        const finalTier = normalizeTier(finalModel, planTier || SUBSCRIPTION_TIER);
-        const webhookLimits = getLimitsForTier(finalModel, finalTier);
-
-        await upsertPlatformSubscription({
-          stripeSubscriptionId: subscription.id,
-          stripeCustomerId: subscription.customer,
-          subscriptionModel: finalModel,
-          subscriptionTier: finalTier,
-          subscriptionStatus: subscription.status,
-          subscriptionStartDate: new Date(subscription.created * 1000).toISOString(),
-          maxTotalCommitment: webhookLimits.maxTotalCommitment,
-          maxInvestors: webhookLimits.maxInvestors,
-          managedByUserId: user.id
-        });
-
-        console.log(`[Stripe Webhook] Updated subscription for user ${user.id} - model: ${finalModel}, tier: ${finalTier}, status: ${subscription.status}`);
+        console.log(`[Stripe Webhook] Updated user ${user.id} with subscription status: ${subscription.status}`);
+      } else {
+        console.log(`[Stripe Webhook] No user found with stripeCustomerId: ${subscription.customer}`);
       }
+
+      // ALWAYS update platform_subscription by stripe_subscription_id (don't depend on finding user)
+      await upsertPlatformSubscription({
+        stripeSubscriptionId: subscription.id,
+        stripeCustomerId: subscription.customer,
+        subscriptionModel: finalModel,
+        subscriptionTier: finalTier,
+        subscriptionStatus: subscription.status,
+        subscriptionStartDate: new Date(subscription.created * 1000).toISOString(),
+        maxTotalCommitment: webhookLimits.maxTotalCommitment,
+        maxInvestors: webhookLimits.maxInvestors,
+        managedByUserId: user?.id
+      });
+
+      console.log(`[Stripe Webhook] Updated platform_subscription - model: ${finalModel}, tier: ${finalTier}, status: ${subscription.status}`);
       break;
     }
 
     case 'customer.subscription.deleted': {
       const deletedSub = event.data.object;
       const user = await User.findOne({ stripeCustomerId: deletedSub.customer });
+
       if (user) {
         await User.findByIdAndUpdate(user.id, { subscriptionStatus: 'canceled' });
-
-        // Also update platform_subscription status
-        await upsertPlatformSubscription({
-          stripeSubscriptionId: deletedSub.id,
-          subscriptionStatus: 'canceled'
-        });
-
-        console.log(`[Stripe Webhook] Marked subscription as canceled for user ${user.id}`);
+        console.log(`[Stripe Webhook] Updated user ${user.id} status to canceled`);
+      } else {
+        console.log(`[Stripe Webhook] No user found with stripeCustomerId: ${deletedSub.customer}`);
       }
+
+      // ALWAYS update platform_subscription status (don't depend on finding user)
+      await upsertPlatformSubscription({
+        stripeSubscriptionId: deletedSub.id,
+        subscriptionStatus: 'canceled'
+      });
+
+      console.log(`[Stripe Webhook] Marked platform_subscription as canceled for: ${deletedSub.id}`);
       break;
     }
 
