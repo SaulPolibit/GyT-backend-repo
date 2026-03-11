@@ -359,11 +359,88 @@ router.post('/webhook', express.raw({ type: 'application/json' }), catchAsync(as
 
   console.log(`[Stripe Webhook] Received event: ${event.type}`);
 
+  // Helper to normalize tier name based on model
+  const normalizeTier = (model, tier) => {
+    if (model === 'payg') {
+      if (['starter', 'growth', 'enterprise'].includes(tier)) return tier;
+      if (tier === 'professional') return 'growth';
+      return 'starter';
+    } else {
+      if (['starter', 'professional', 'enterprise'].includes(tier)) return tier;
+      if (tier === 'growth') return 'professional';
+      return 'starter';
+    }
+  };
+
   // Handle the event
   switch (event.type) {
+    case 'checkout.session.completed': {
+      const session = event.data.object;
+      console.log(`[Stripe Webhook] Checkout completed: ${session.id}`);
+      console.log(`[Stripe Webhook] Session metadata:`, session.metadata);
+
+      const metadata = session.metadata || {};
+      const { userId, planTier, subscriptionModel, includedEmissions } = metadata;
+
+      // Skip if not a subscription checkout
+      if (session.mode !== 'subscription' || !session.subscription) {
+        console.log(`[Stripe Webhook] Not a subscription checkout, skipping`);
+        break;
+      }
+
+      // Get the Stripe subscription
+      const stripeSubscription = await stripeService.getSubscription(session.subscription);
+      console.log(`[Stripe Webhook] Stripe subscription:`, {
+        id: stripeSubscription.id,
+        status: stripeSubscription.status,
+        metadata: stripeSubscription.metadata
+      });
+
+      // Use metadata from session, fall back to env vars
+      const finalModel = subscriptionModel || SUBSCRIPTION_MODEL;
+      const finalTier = normalizeTier(finalModel, planTier || SUBSCRIPTION_TIER);
+      const limits = getLimitsForTier(finalModel, finalTier);
+
+      console.log(`[Stripe Webhook] Setting subscription with:`, {
+        model: finalModel,
+        tier: finalTier,
+        planTierFromMetadata: planTier,
+        limits,
+        status: stripeSubscription.status
+      });
+
+      // Find user by email
+      let managedByUserId = userId;
+      if (session.customer_email) {
+        const userByEmail = await User.findOne({ email: session.customer_email.toLowerCase() });
+        if (userByEmail) {
+          managedByUserId = userByEmail.id;
+        }
+      }
+
+      await upsertPlatformSubscription({
+        stripeSubscriptionId: stripeSubscription.id,
+        stripeCustomerId: session.customer,
+        subscriptionModel: finalModel,
+        subscriptionTier: finalTier,
+        subscriptionStatus: stripeSubscription.status,
+        subscriptionStartDate: new Date(stripeSubscription.created * 1000).toISOString(),
+        maxTotalCommitment: limits.maxTotalCommitment,
+        maxInvestors: limits.maxInvestors,
+        emissionsAvailable: parseInt(includedEmissions || '0'),
+        managedByUserId
+      });
+
+      console.log(`[Stripe Webhook] Created/updated platform_subscription from checkout - model: ${finalModel}, tier: ${finalTier}`);
+      break;
+    }
+
     case 'customer.subscription.created':
     case 'customer.subscription.updated': {
       const subscription = event.data.object;
+      console.log(`[Stripe Webhook] Subscription ${event.type}: ${subscription.id}, status: ${subscription.status}`);
+      console.log(`[Stripe Webhook] Subscription metadata:`, subscription.metadata);
+
       const user = await User.findOne({ stripeCustomerId: subscription.customer });
       if (user) {
         await User.findByIdAndUpdate(user.id, {
@@ -371,14 +448,17 @@ router.post('/webhook', express.raw({ type: 'application/json' }), catchAsync(as
           subscriptionStatus: subscription.status
         });
 
-        // Also update platform_subscription with model, tier, and limits from env
-        const webhookLimits = getLimitsForTier(SUBSCRIPTION_MODEL, SUBSCRIPTION_TIER);
+        // Get tier and model from subscription metadata (set during checkout)
+        const { planTier, subscriptionModel } = subscription.metadata || {};
+        const finalModel = subscriptionModel || SUBSCRIPTION_MODEL;
+        const finalTier = normalizeTier(finalModel, planTier || SUBSCRIPTION_TIER);
+        const webhookLimits = getLimitsForTier(finalModel, finalTier);
 
         await upsertPlatformSubscription({
           stripeSubscriptionId: subscription.id,
           stripeCustomerId: subscription.customer,
-          subscriptionModel: SUBSCRIPTION_MODEL,
-          subscriptionTier: SUBSCRIPTION_TIER,
+          subscriptionModel: finalModel,
+          subscriptionTier: finalTier,
           subscriptionStatus: subscription.status,
           subscriptionStartDate: new Date(subscription.created * 1000).toISOString(),
           maxTotalCommitment: webhookLimits.maxTotalCommitment,
@@ -386,7 +466,7 @@ router.post('/webhook', express.raw({ type: 'application/json' }), catchAsync(as
           managedByUserId: user.id
         });
 
-        console.log(`[Stripe Webhook] Updated subscription for user ${user.id} - model: ${SUBSCRIPTION_MODEL}, tier: ${SUBSCRIPTION_TIER}, limits:`, webhookLimits);
+        console.log(`[Stripe Webhook] Updated subscription for user ${user.id} - model: ${finalModel}, tier: ${finalTier}, status: ${subscription.status}`);
       }
       break;
     }
@@ -404,6 +484,35 @@ router.post('/webhook', express.raw({ type: 'application/json' }), catchAsync(as
         });
 
         console.log(`[Stripe Webhook] Marked subscription as canceled for user ${user.id}`);
+      }
+      break;
+    }
+
+    case 'invoice.paid': {
+      const invoice = event.data.object;
+      console.log(`[Stripe Webhook] Invoice paid: ${invoice.id}, subscription: ${invoice.subscription}`);
+
+      // Update subscription status when first invoice is paid
+      if (invoice.subscription && invoice.billing_reason === 'subscription_create') {
+        const stripeSubscription = await stripeService.getSubscription(invoice.subscription);
+        const { planTier, subscriptionModel } = stripeSubscription.metadata || {};
+
+        console.log(`[Stripe Webhook] First invoice paid, subscription status: ${stripeSubscription.status}`);
+
+        const finalModel = subscriptionModel || SUBSCRIPTION_MODEL;
+        const finalTier = normalizeTier(finalModel, planTier || SUBSCRIPTION_TIER);
+        const limits = getLimitsForTier(finalModel, finalTier);
+
+        await upsertPlatformSubscription({
+          stripeSubscriptionId: invoice.subscription,
+          subscriptionModel: finalModel,
+          subscriptionTier: finalTier,
+          subscriptionStatus: stripeSubscription.status,
+          maxTotalCommitment: limits.maxTotalCommitment,
+          maxInvestors: limits.maxInvestors
+        });
+
+        console.log(`[Stripe Webhook] Updated from invoice.paid - model: ${finalModel}, tier: ${finalTier}, status: ${stripeSubscription.status}`);
       }
       break;
     }
