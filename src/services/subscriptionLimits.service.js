@@ -279,14 +279,12 @@ const getUserSubscription = async (userId) => {
 /**
  * Create or update platform subscription
  * Only updates fields that are explicitly provided (not undefined)
+ * Uses stripe_subscription_id as the unique key to prevent duplicates
  * @param {Object} data - Subscription data
  * @returns {Promise<Object>} Created/updated subscription
  */
 const upsertPlatformSubscription = async (data) => {
   const supabase = getSupabase();
-
-  // Check if ANY subscription exists (not just active ones) to avoid duplicates
-  const existing = await getAnyPlatformSubscription();
 
   // Build subscription data - only include fields that are provided
   const subscriptionData = {};
@@ -316,6 +314,35 @@ const upsertPlatformSubscription = async (data) => {
   }
 
   console.log('[SubscriptionLimits] upsertPlatformSubscription data:', subscriptionData);
+
+  // If we have a stripe_subscription_id, try to find existing by that ID first
+  if (data.stripeSubscriptionId) {
+    const { data: existingBySub } = await supabase
+      .from('platform_subscription')
+      .select('id')
+      .eq('stripe_subscription_id', data.stripeSubscriptionId)
+      .maybeSingle();
+
+    if (existingBySub) {
+      // Update existing subscription by stripe_subscription_id
+      const { data: updated, error } = await supabase
+        .from('platform_subscription')
+        .update(subscriptionData)
+        .eq('stripe_subscription_id', data.stripeSubscriptionId)
+        .select()
+        .single();
+
+      if (error) {
+        console.error('[SubscriptionLimits] Error updating platform subscription:', error);
+        throw error;
+      }
+      console.log('[SubscriptionLimits] Updated platform subscription by stripe_subscription_id:', updated.id);
+      return updated;
+    }
+  }
+
+  // Check if ANY subscription exists (for platforms that only allow one subscription)
+  const existing = await getAnyPlatformSubscription();
 
   let result;
 
@@ -352,6 +379,31 @@ const upsertPlatformSubscription = async (data) => {
       .single();
 
     if (error) {
+      // Handle duplicate key error - another webhook might have inserted first
+      if (error.code === '23505') {
+        console.log('[SubscriptionLimits] Duplicate detected, fetching existing subscription');
+        const { data: fetched } = await supabase
+          .from('platform_subscription')
+          .select('*')
+          .eq('stripe_subscription_id', data.stripeSubscriptionId)
+          .single();
+
+        if (fetched) {
+          // Update the existing record instead
+          const { data: updated, error: updateError } = await supabase
+            .from('platform_subscription')
+            .update(subscriptionData)
+            .eq('id', fetched.id)
+            .select()
+            .single();
+
+          if (updateError) {
+            console.error('[SubscriptionLimits] Error updating after duplicate:', updateError);
+            throw updateError;
+          }
+          return updated;
+        }
+      }
       console.error('[SubscriptionLimits] Error creating platform subscription:', error);
       throw error;
     }
