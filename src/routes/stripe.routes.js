@@ -525,7 +525,7 @@ router.post('/webhook', express.raw({ type: 'application/json' }), catchAsync(as
       console.log(`[Stripe Webhook] Session metadata:`, session.metadata);
 
       const metadata = session.metadata || {};
-      const { userId, planTier, subscriptionModel, includedEmissions, type } = metadata;
+      const { userId, planTier, subscriptionModel, includedEmissions, type, initialCreditDeposit } = metadata;
 
       // Handle extra investors purchase
       if (type === 'extra_investors' && session.mode === 'payment') {
@@ -605,7 +605,8 @@ router.post('/webhook', express.raw({ type: 'application/json' }), catchAsync(as
         }
       }
 
-      await upsertPlatformSubscription({
+      // Build subscription data
+      const subscriptionData = {
         stripeSubscriptionId: stripeSubscription.id,
         stripeCustomerId: session.customer,
         subscriptionModel: finalModel,
@@ -616,7 +617,16 @@ router.post('/webhook', express.raw({ type: 'application/json' }), catchAsync(as
         maxInvestors: limits.maxInvestors,
         emissionsAvailable: parseInt(includedEmissions || '0'),
         managedByUserId
-      });
+      };
+
+      // For PAYG model, set initial credit balance from checkout metadata
+      if (finalModel === 'payg') {
+        // Use initialCreditDeposit from checkout metadata (default $50 = 5000 cents)
+        subscriptionData.creditBalance = parseInt(initialCreditDeposit || '0') || 5000;
+        console.log(`[Stripe Webhook] PAYG subscription - setting credit_balance: ${subscriptionData.creditBalance}`);
+      }
+
+      await upsertPlatformSubscription(subscriptionData);
 
       console.log(`[Stripe Webhook] Created/updated platform_subscription from checkout - model: ${finalModel}, tier: ${finalTier}`);
       break;
