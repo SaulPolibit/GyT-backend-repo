@@ -13,6 +13,12 @@ const stripeConnect = require('stripe')(
 );
 
 class StripeService {
+  constructor() {
+    // Expose stripe instance for direct access when needed
+    this.stripe = stripe;
+    this.stripeConnect = stripeConnect;
+  }
+
   /**
    * Create a Stripe customer from a user
    * @param {Object} user - User object with email, firstName, lastName, id
