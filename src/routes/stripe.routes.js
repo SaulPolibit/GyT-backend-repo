@@ -303,6 +303,151 @@ router.post('/reactivate-subscription', authenticate, catchAsync(async (req, res
 }));
 
 /**
+ * POST /api/stripe/purchase-extra-investors
+ * Purchase additional investor slots (tier_based model only)
+ */
+router.post('/purchase-extra-investors', authenticate, catchAsync(async (req, res) => {
+  const { extraInvestors = 1 } = req.body;
+  const userId = req.user.id || req.user.userId;
+  const user = await User.findById(userId);
+
+  if (!user) {
+    return res.status(404).json({ success: false, message: 'User not found' });
+  }
+
+  // Get platform subscription to verify tier_based model
+  const platformSub = await getPlatformSubscription();
+  if (!platformSub) {
+    return res.status(400).json({ success: false, message: 'No active subscription found' });
+  }
+
+  if (platformSub.subscription_model !== 'tier_based') {
+    return res.status(400).json({ success: false, message: 'Extra investors only available for tier-based subscriptions' });
+  }
+
+  // Get or create Stripe customer
+  let customerId = user.stripeCustomerId;
+  if (!customerId) {
+    const customer = await stripeService.createCustomer(user);
+    customerId = customer.id;
+    await User.findByIdAndUpdate(userId, { stripeCustomerId: customerId });
+  }
+
+  // Create checkout session for extra investors
+  // Price: $25 per extra investor (configurable via env var)
+  const pricePerInvestor = parseInt(process.env.STRIPE_EXTRA_INVESTOR_PRICE || '2500'); // in cents
+  const totalAmount = pricePerInvestor * extraInvestors;
+
+  const session = await stripeService.stripe.checkout.sessions.create({
+    customer: customerId,
+    mode: 'payment',
+    payment_method_types: ['card'],
+    line_items: [{
+      price_data: {
+        currency: 'usd',
+        product_data: {
+          name: `Extra Investor Slot${extraInvestors > 1 ? 's' : ''}`,
+          description: `Add ${extraInvestors} additional investor slot${extraInvestors > 1 ? 's' : ''} to your subscription`,
+        },
+        unit_amount: pricePerInvestor,
+      },
+      quantity: extraInvestors,
+    }],
+    metadata: {
+      type: 'extra_investors',
+      extraInvestors: extraInvestors.toString(),
+      userId,
+      userEmail: user.email,
+    },
+    success_url: `${process.env.FRONTEND_URL || 'http://localhost:3000'}/investment-manager/settings?tab=subscription&success=true&purchase=extra_investors&quantity=${extraInvestors}&session_id={CHECKOUT_SESSION_ID}`,
+    cancel_url: `${process.env.FRONTEND_URL || 'http://localhost:3000'}/investment-manager/settings?tab=subscription&canceled=true`,
+  });
+
+  console.log(`[Stripe] Created extra investors checkout session: ${session.id} for ${extraInvestors} slots`);
+
+  res.json({
+    success: true,
+    sessionId: session.id,
+    url: session.url,
+  });
+}));
+
+/**
+ * POST /api/stripe/purchase-extra-aum
+ * Purchase additional AUM capacity (tier_based model only)
+ */
+router.post('/purchase-extra-aum', authenticate, catchAsync(async (req, res) => {
+  const { extraCommitment } = req.body; // Amount in dollars
+  const userId = req.user.id || req.user.userId;
+  const user = await User.findById(userId);
+
+  if (!user) {
+    return res.status(404).json({ success: false, message: 'User not found' });
+  }
+
+  if (!extraCommitment || extraCommitment <= 0) {
+    return res.status(400).json({ success: false, message: 'Invalid extra commitment amount' });
+  }
+
+  // Get platform subscription to verify tier_based model
+  const platformSub = await getPlatformSubscription();
+  if (!platformSub) {
+    return res.status(400).json({ success: false, message: 'No active subscription found' });
+  }
+
+  if (platformSub.subscription_model !== 'tier_based') {
+    return res.status(400).json({ success: false, message: 'Extra AUM only available for tier-based subscriptions' });
+  }
+
+  // Get or create Stripe customer
+  let customerId = user.stripeCustomerId;
+  if (!customerId) {
+    const customer = await stripeService.createCustomer(user);
+    customerId = customer.id;
+    await User.findByIdAndUpdate(userId, { stripeCustomerId: customerId });
+  }
+
+  // Calculate price: $100 per $1M AUM (configurable via env var)
+  const pricePerMillion = parseInt(process.env.STRIPE_EXTRA_AUM_PRICE_PER_MILLION || '10000'); // $100 in cents
+  const millionsAdded = extraCommitment / 1000000;
+  const totalAmount = Math.round(pricePerMillion * millionsAdded);
+
+  const session = await stripeService.stripe.checkout.sessions.create({
+    customer: customerId,
+    mode: 'payment',
+    payment_method_types: ['card'],
+    line_items: [{
+      price_data: {
+        currency: 'usd',
+        product_data: {
+          name: `Extra AUM Capacity`,
+          description: `Add $${millionsAdded}M additional AUM capacity to your subscription`,
+        },
+        unit_amount: totalAmount,
+      },
+      quantity: 1,
+    }],
+    metadata: {
+      type: 'extra_aum',
+      extraCommitment: extraCommitment.toString(),
+      millionsAdded: millionsAdded.toString(),
+      userId,
+      userEmail: user.email,
+    },
+    success_url: `${process.env.FRONTEND_URL || 'http://localhost:3000'}/investment-manager/settings?tab=subscription&success=true&purchase=extra_aum&quantity=${millionsAdded}&session_id={CHECKOUT_SESSION_ID}`,
+    cancel_url: `${process.env.FRONTEND_URL || 'http://localhost:3000'}/investment-manager/settings?tab=subscription&canceled=true`,
+  });
+
+  console.log(`[Stripe] Created extra AUM checkout session: ${session.id} for $${millionsAdded}M`);
+
+  res.json({
+    success: true,
+    sessionId: session.id,
+    url: session.url,
+  });
+}));
+
+/**
  * GET /api/stripe/invoices
  * Get invoices for the current user
  */
@@ -380,7 +525,49 @@ router.post('/webhook', express.raw({ type: 'application/json' }), catchAsync(as
       console.log(`[Stripe Webhook] Session metadata:`, session.metadata);
 
       const metadata = session.metadata || {};
-      const { userId, planTier, subscriptionModel, includedEmissions } = metadata;
+      const { userId, planTier, subscriptionModel, includedEmissions, type } = metadata;
+
+      // Handle extra investors purchase
+      if (type === 'extra_investors' && session.mode === 'payment') {
+        const extraInvestors = parseInt(metadata.extraInvestors || '0');
+        console.log(`[Stripe Webhook] Extra investors purchase: ${extraInvestors}`);
+
+        if (extraInvestors > 0) {
+          const platformSub = await getPlatformSubscription();
+          if (platformSub) {
+            const currentMax = platformSub.max_investors || 0;
+            const currentExtra = platformSub.extra_investors_purchased || 0;
+            await upsertPlatformSubscription({
+              stripeSubscriptionId: platformSub.stripe_subscription_id,
+              maxInvestors: currentMax + extraInvestors,
+              extraInvestorsPurchased: currentExtra + extraInvestors
+            });
+            console.log(`[Stripe Webhook] Updated max_investors: ${currentMax} -> ${currentMax + extraInvestors}`);
+          }
+        }
+        break;
+      }
+
+      // Handle extra AUM purchase
+      if (type === 'extra_aum' && session.mode === 'payment') {
+        const extraCommitment = parseInt(metadata.extraCommitment || '0');
+        console.log(`[Stripe Webhook] Extra AUM purchase: $${extraCommitment}`);
+
+        if (extraCommitment > 0) {
+          const platformSub = await getPlatformSubscription();
+          if (platformSub) {
+            const currentMax = parseFloat(platformSub.max_total_commitment) || 0;
+            const currentExtra = parseFloat(platformSub.extra_commitment_purchased) || 0;
+            await upsertPlatformSubscription({
+              stripeSubscriptionId: platformSub.stripe_subscription_id,
+              maxTotalCommitment: currentMax + extraCommitment,
+              extraCommitmentPurchased: currentExtra + extraCommitment
+            });
+            console.log(`[Stripe Webhook] Updated max_total_commitment: ${currentMax} -> ${currentMax + extraCommitment}`);
+          }
+        }
+        break;
+      }
 
       // Skip if not a subscription checkout
       if (session.mode !== 'subscription' || !session.subscription) {
