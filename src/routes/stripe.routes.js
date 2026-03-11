@@ -14,9 +14,29 @@ const { upsertPlatformSubscription, getPlatformSubscription } = require('../serv
 // Minimum subscription period in months
 const MINIMUM_SUBSCRIPTION_MONTHS = 12;
 
-// Subscription model from environment (defaults to 'payg')
-const SUBSCRIPTION_MODEL = process.env.SUBSCRIPTION_MODEL || 'payg';
+// Subscription model from environment (defaults to 'tier_based')
+const SUBSCRIPTION_MODEL = process.env.SUBSCRIPTION_MODEL || 'tier_based';
 const SUBSCRIPTION_TIER = process.env.SUBSCRIPTION_TIER || 'starter';
+
+// Tier limits for subscription models
+const TIER_BASED_LIMITS = {
+  starter: { maxTotalCommitment: 25000000, maxInvestors: 50 },
+  professional: { maxTotalCommitment: 50000000, maxInvestors: 100 },
+  enterprise: { maxTotalCommitment: 100000000, maxInvestors: 200 },
+};
+
+const PAYG_LIMITS = {
+  starter: { maxInvestors: 1000, maxTotalCommitment: 999999999999 },
+  growth: { maxInvestors: 2000, maxTotalCommitment: 999999999999 },
+  enterprise: { maxInvestors: 4000, maxTotalCommitment: 999999999999 },
+};
+
+const getLimitsForTier = (model, tier) => {
+  if (model === 'payg') {
+    return PAYG_LIMITS[tier] || PAYG_LIMITS.starter;
+  }
+  return TIER_BASED_LIMITS[tier] || TIER_BASED_LIMITS.starter;
+};
 
 // Price IDs from environment
 const PRICE_IDS = {
@@ -117,7 +137,9 @@ router.post('/create-subscription', authenticate, catchAsync(async (req, res) =>
     subscriptionStatus: subscription.status
   });
 
-  // Update platform subscription with model and tier from env vars
+  // Update platform subscription with model, tier, and limits from env vars
+  const limits = getLimitsForTier(SUBSCRIPTION_MODEL, SUBSCRIPTION_TIER);
+
   await upsertPlatformSubscription({
     stripeSubscriptionId: subscription.id,
     stripeCustomerId: user.stripeCustomerId,
@@ -125,10 +147,12 @@ router.post('/create-subscription', authenticate, catchAsync(async (req, res) =>
     subscriptionTier: SUBSCRIPTION_TIER,
     subscriptionStatus: subscription.status,
     subscriptionStartDate: new Date().toISOString(),
+    maxTotalCommitment: limits.maxTotalCommitment,
+    maxInvestors: limits.maxInvestors,
     managedByUserId: userId
   });
 
-  console.log(`[Stripe] Created subscription with model: ${SUBSCRIPTION_MODEL}, tier: ${SUBSCRIPTION_TIER}`);
+  console.log(`[Stripe] Created subscription with model: ${SUBSCRIPTION_MODEL}, tier: ${SUBSCRIPTION_TIER}, limits:`, limits);
 
   res.json({
     success: true,
@@ -347,17 +371,22 @@ router.post('/webhook', express.raw({ type: 'application/json' }), catchAsync(as
           subscriptionStatus: subscription.status
         });
 
-        // Also update platform_subscription with model from env
+        // Also update platform_subscription with model, tier, and limits from env
+        const webhookLimits = getLimitsForTier(SUBSCRIPTION_MODEL, SUBSCRIPTION_TIER);
+
         await upsertPlatformSubscription({
           stripeSubscriptionId: subscription.id,
           stripeCustomerId: subscription.customer,
           subscriptionModel: SUBSCRIPTION_MODEL,
           subscriptionTier: SUBSCRIPTION_TIER,
           subscriptionStatus: subscription.status,
+          subscriptionStartDate: new Date(subscription.created * 1000).toISOString(),
+          maxTotalCommitment: webhookLimits.maxTotalCommitment,
+          maxInvestors: webhookLimits.maxInvestors,
           managedByUserId: user.id
         });
 
-        console.log(`[Stripe Webhook] Updated subscription for user ${user.id} - model: ${SUBSCRIPTION_MODEL}`);
+        console.log(`[Stripe Webhook] Updated subscription for user ${user.id} - model: ${SUBSCRIPTION_MODEL}, tier: ${SUBSCRIPTION_TIER}, limits:`, webhookLimits);
       }
       break;
     }

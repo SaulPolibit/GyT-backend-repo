@@ -278,6 +278,7 @@ const getUserSubscription = async (userId) => {
 
 /**
  * Create or update platform subscription
+ * Only updates fields that are explicitly provided (not undefined)
  * @param {Object} data - Subscription data
  * @returns {Promise<Object>} Created/updated subscription
  */
@@ -287,27 +288,39 @@ const upsertPlatformSubscription = async (data) => {
   // Check if ANY subscription exists (not just active ones) to avoid duplicates
   const existing = await getAnyPlatformSubscription();
 
-  const subscriptionData = {
-    stripe_subscription_id: data.stripeSubscriptionId,
-    stripe_customer_id: data.stripeCustomerId,
-    subscription_model: data.subscriptionModel,
-    subscription_tier: data.subscriptionTier,
-    subscription_status: data.subscriptionStatus,
-    subscription_start_date: data.subscriptionStartDate,
-    max_total_commitment: data.maxTotalCommitment,
-    max_investors: data.maxInvestors,
-    extra_commitment_purchased: data.extraCommitmentPurchased || 0,
-    extra_investors_purchased: data.extraInvestorsPurchased || 0,
-    credit_balance: data.creditBalance || 0,
-    emissions_available: data.emissionsAvailable || 0,
-    emissions_used: data.emissionsUsed || 0,
-    managed_by_user_id: data.managedByUserId
+  // Build subscription data - only include fields that are provided
+  const subscriptionData = {};
+
+  // Map provided fields (only include if value is not undefined)
+  const fieldMapping = {
+    stripeSubscriptionId: 'stripe_subscription_id',
+    stripeCustomerId: 'stripe_customer_id',
+    subscriptionModel: 'subscription_model',
+    subscriptionTier: 'subscription_tier',
+    subscriptionStatus: 'subscription_status',
+    subscriptionStartDate: 'subscription_start_date',
+    maxTotalCommitment: 'max_total_commitment',
+    maxInvestors: 'max_investors',
+    extraCommitmentPurchased: 'extra_commitment_purchased',
+    extraInvestorsPurchased: 'extra_investors_purchased',
+    creditBalance: 'credit_balance',
+    emissionsAvailable: 'emissions_available',
+    emissionsUsed: 'emissions_used',
+    managedByUserId: 'managed_by_user_id'
   };
+
+  for (const [camelKey, snakeKey] of Object.entries(fieldMapping)) {
+    if (data[camelKey] !== undefined) {
+      subscriptionData[snakeKey] = data[camelKey];
+    }
+  }
+
+  console.log('[SubscriptionLimits] upsertPlatformSubscription data:', subscriptionData);
 
   let result;
 
   if (existing) {
-    // Update existing subscription
+    // Update existing subscription - only update provided fields
     const { data: updated, error } = await supabase
       .from('platform_subscription')
       .update(subscriptionData)
@@ -320,12 +333,21 @@ const upsertPlatformSubscription = async (data) => {
       throw error;
     }
     result = updated;
-    console.log('[SubscriptionLimits] Updated platform subscription:', result.id);
+    console.log('[SubscriptionLimits] Updated platform subscription:', result.id, 'Fields updated:', Object.keys(subscriptionData));
   } else {
-    // Create new subscription
+    // Create new subscription - set defaults for missing fields
+    const insertData = {
+      ...subscriptionData,
+      extra_commitment_purchased: subscriptionData.extra_commitment_purchased ?? 0,
+      extra_investors_purchased: subscriptionData.extra_investors_purchased ?? 0,
+      credit_balance: subscriptionData.credit_balance ?? 0,
+      emissions_available: subscriptionData.emissions_available ?? 0,
+      emissions_used: subscriptionData.emissions_used ?? 0
+    };
+
     const { data: created, error } = await supabase
       .from('platform_subscription')
-      .insert(subscriptionData)
+      .insert(insertData)
       .select()
       .single();
 
