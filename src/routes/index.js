@@ -60,6 +60,9 @@ const feeReportRoutes = require('./feeReport.routes');
 // ILPA Report routes
 const ilpaReportRoutes = require('./ilpaReport.routes');
 
+// NeoPay routes
+const neopayRoutes = require('./neopay.routes');
+
 const router = express.Router();
 
 // Mount route modules
@@ -125,6 +128,9 @@ router.use('/fee-reports', feeReportRoutes);
 // Mount ILPA Report routes
 router.use('/ilpa-reports', ilpaReportRoutes);
 
+// Mount NeoPay routes
+router.use('/neopay', neopayRoutes);
+
 // Root API endpoint
 router.get('/', (_req, res) => {
   res.json({
@@ -179,6 +185,8 @@ router.get('/', (_req, res) => {
       feeReports: '/api/fee-reports',
       // ILPA Report endpoints
       ilpaReports: '/api/ilpa-reports',
+      // NeoPay endpoints
+      neopay: '/api/neopay',
     },
   });
 });

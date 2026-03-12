@@ -53,6 +53,9 @@ const FirmSettings = require('./firmSettings');
 // Presence System models
 const Presence = require('./presence');
 
+// NeoPay System models
+const NeoPay = require('./neoPay');
+
 module.exports = {
   // Core models
   User,
@@ -105,4 +108,7 @@ module.exports = {
 
   // Presence System models
   Presence,
+
+  // NeoPay System models
+  NeoPay,
 };
